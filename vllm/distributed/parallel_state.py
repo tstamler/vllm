@@ -1594,11 +1594,22 @@ def initialize_model_parallel(
     if enable_elastic_ep:
         group_ranks = local_all_ranks.view(-1, tensor_model_parallel_size).unbind(0)
         group_ranks = [x.tolist() for x in group_ranks]
+    tp_backend = backend
+    if envs.VLLM_USE_FT_NCCL_TP and tensor_model_parallel_size > 1:
+        try:
+            import ft_collective  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "VLLM_USE_FT_NCCL_TP=1 requires ft_collective to be "
+                "importable so it can register the 'ft_nccl' backend."
+            ) from e
+        tp_backend = "ft_nccl"
+        logger.info("Using ft_nccl backend for tensor-parallel groups.")
     # message queue broadcaster is only used in tensor model parallel group
     _TP = init_model_parallel_group(
         group_ranks,
         get_world_group().local_rank,
-        backend,
+        tp_backend,
         use_message_queue_broadcaster=True,
         group_name="tp",
     )

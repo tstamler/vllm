@@ -13,6 +13,7 @@ from vllm.distributed.device_communicators.all_reduce_utils import (
 from vllm.distributed.device_communicators.pynccl import register_nccl_symmetric_ops
 from vllm.distributed.device_communicators.pynccl_allocator import (
     is_symmetric_memory_enabled,
+    is_symmetric_memory_tensor,
 )
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
@@ -84,6 +85,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self.qr_comm: QuickAllReduce | None = None
         self.symm_mem_comm: SymmMemCommunicator | None = None
         self.fi_ar_comm: FlashInferAllReduce | None = None
+        self._ft_process_group = None
+        self._ft_ok_status = None
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -186,6 +189,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         depends on the input tensor.
         """
         all_potential_ar_backends = [
+            "FT_NCCL",
             "NCCL_SYMM_MEM",
             "QUICK_REDUCE",
             "FLASHINFER",
@@ -210,6 +214,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
             or self.world_size
             > NCCL_SYMM_MEM_ALL_REDUCE_CONFIG["always_use_above_world_size"]
         )
+        if self._should_use_ft_nccl_tp():
+            enabled_ar_backends.append("FT_NCCL")
         if (
             self.pynccl_comm is not None
             and not self.pynccl_comm.disabled
@@ -238,7 +244,107 @@ class CudaCommunicator(DeviceCommunicatorBase):
             scope="global",
         )
 
+    def _should_use_ft_nccl_tp(self) -> bool:
+        return (
+            envs.VLLM_USE_FT_NCCL_TP
+            and self.unique_name.split(":")[0] == "tp"
+            and self.world_size > 1
+        )
+
+    def _get_ft_process_group(self):
+        if self._ft_process_group is not None:
+            return self._ft_process_group
+
+        try:
+            from ft_collective import FT_OK, get_ft_process_group
+        except ImportError as e:
+            raise RuntimeError(
+                "VLLM_USE_FT_NCCL_TP=1 requires ft_collective to be importable."
+            ) from e
+
+        ft_process_group = get_ft_process_group()
+        if ft_process_group is None:
+            raise RuntimeError(
+                "VLLM_USE_FT_NCCL_TP=1 is enabled, but no FTProcessGroup was "
+                "registered. Ensure the TP group is created with backend='ft_nccl'."
+            )
+
+        self._ft_process_group = ft_process_group
+        self._ft_ok_status = FT_OK
+        return ft_process_group
+
+    def _ft_nccl_tp_all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+        ft_process_group = self._get_ft_process_group()
+        self._ensure_ft_nccl_input(input_, ft_process_group)
+        torch.distributed.all_reduce(input_, group=self.device_group)
+        self._check_ft_nccl_status(ft_process_group)
+        return input_
+
+    def _check_ft_nccl_status(self, ft_process_group) -> None:
+        if hasattr(ft_process_group, "check_and_clear_error"):
+            status = ft_process_group.check_and_clear_error()
+        else:
+            status = ft_process_group.get_error()
+        if status != self._ft_ok_status:
+            raise RuntimeError(f"ft_nccl TP all-reduce failed with status {status}.")
+
+    def _ensure_ft_nccl_input(self, input_: torch.Tensor, ft_process_group) -> None:
+        if not input_.is_contiguous():
+            raise RuntimeError(
+                "ft_nccl TP all-reduce requires a contiguous input tensor."
+            )
+
+        ft_device = getattr(ft_process_group, "_device", None)
+        if ft_device is not None and torch.device(ft_device) != input_.device:
+            raise RuntimeError(
+                "ft_nccl TP all-reduce was initialized on "
+                f"{ft_device}, but the input tensor is on {input_.device}."
+            )
+
+        windows = getattr(ft_process_group, "_windows", {})
+        if input_.data_ptr() in windows:
+            self._check_ft_nccl_ar_eligible(input_, ft_process_group)
+            return
+
+        if not is_symmetric_memory_tensor(input_):
+            raise RuntimeError(
+                "ft_nccl TP all-reduce requires inputs to be allocated in "
+                "registered symmetric memory. This tensor is not in vLLM's "
+                "NCCL symmetric-memory pool."
+            )
+
+        if input_.data_ptr() != input_.untyped_storage().data_ptr():
+            raise RuntimeError(
+                "ft_nccl TP all-reduce can only register tensors that start at "
+                "their backing storage pointer."
+            )
+
+        register = getattr(ft_process_group, "register_symmetric_tensor", None)
+        if register is None:
+            raise RuntimeError(
+                "ft_nccl TP all-reduce requires an FTProcessGroup with "
+                "register_symmetric_tensor()."
+            )
+
+        register(input_)
+        self._check_ft_nccl_ar_eligible(input_, ft_process_group)
+
+    def _check_ft_nccl_ar_eligible(self, input_: torch.Tensor, ft_process_group) -> None:
+        is_eligible = getattr(ft_process_group, "_is_ft_eligible_ar", None)
+        if is_eligible is not None and not is_eligible(input_):
+            reason = "unsupported dtype, size, or registration state"
+            fallback_reason = getattr(ft_process_group, "_fallback_reason", None)
+            if fallback_reason is not None:
+                reason = fallback_reason(input_, "allreduce")
+            raise RuntimeError(
+                "ft_nccl TP all-reduce input is not eligible for the FT "
+                f"all-reduce kernel: {reason}."
+            )
+
     def all_reduce(self, input_):
+        if self._should_use_ft_nccl_tp():
+            return self._ft_nccl_tp_all_reduce(input_)
+
         # since currently we perform copy input -> symm_input -> out-of-place AR
         # return symm_output, we don't need to check if input is symmetric
         if self.pynccl_comm is not None and should_nccl_symm_mem_allreduce(
