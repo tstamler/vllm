@@ -321,9 +321,19 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         register = getattr(ft_process_group, "register_symmetric_tensor", None)
         if register is None:
+            ft_collective_path = "<unavailable>"
+            try:
+                import ft_collective
+
+                ft_collective_path = getattr(ft_collective, "__file__", "<unknown>")
+            except ImportError:
+                pass
+            pg_cls = type(ft_process_group)
             raise RuntimeError(
                 "ft_nccl TP all-reduce requires an FTProcessGroup with "
-                "register_symmetric_tensor()."
+                "register_symmetric_tensor(). Imported ft_collective from "
+                f"{ft_collective_path}; process group type is "
+                f"{pg_cls.__module__}.{pg_cls.__qualname__}."
             )
 
         register(input_)

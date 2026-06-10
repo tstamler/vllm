@@ -74,6 +74,21 @@ def ft_nccl_tp_communicator_worker(
         cuda_communicator = typing.cast(
             CudaCommunicator, get_tp_group().device_communicator
         )
+        ft_process_group = ft_collective.get_ft_process_group()
+        if ft_process_group is None:
+            q.put("ft_collective did not register an FTProcessGroup.")
+            return
+        if not hasattr(ft_process_group, "register_symmetric_tensor"):
+            pg_cls = type(ft_process_group)
+            q.put(
+                "ft_collective was imported from "
+                f"{getattr(ft_collective, '__file__', '<unknown>')}, but "
+                f"{pg_cls.__module__}.{pg_cls.__qualname__} does not expose "
+                "register_symmetric_tensor(). Use an ft_collective build with "
+                "external symmetric tensor registration support."
+            )
+            return
+
         pynccl_comm = cuda_communicator.pynccl_comm
         if pynccl_comm is None or pynccl_comm.disabled:
             q.put("PyNCCL communicator is not available.")
