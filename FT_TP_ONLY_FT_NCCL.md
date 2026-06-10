@@ -76,10 +76,13 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    If a TP input is already registered with `FTProcessGroup`, or if it is a
    vLLM NCCL symmetric-memory tensor that can be registered with
    `register_symmetric_tensor()`, the communicator calls `torch.distributed`
-   directly on that input:
+   directly on that input. For tensors allocated from vLLM's NCCL
+   symmetric-memory pool, register the pool segment as the primary FT window
+   first, then register the tensor pointer as a derived alias:
 
    ```python
-   ft_pg.register_symmetric_tensor(input_)  # once per symmetric pointer
+   ft_pg.register_symmetric_tensor(base_ptr=segment_ptr, size_bytes=segment_size)
+   ft_pg.register_symmetric_tensor(input_)  # alias within the segment
    torch.distributed.all_reduce(input_, group=self.device_group)
    return input_
    ```

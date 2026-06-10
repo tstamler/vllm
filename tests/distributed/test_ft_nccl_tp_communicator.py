@@ -15,6 +15,7 @@ from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
 from vllm.distributed.device_communicators.pynccl_allocator import (
     get_nccl_mem_pool,
+    get_symmetric_memory_region,
     is_symmetric_memory_tensor,
     nccl_symm_mem_context,
 )
@@ -120,10 +121,17 @@ def ft_nccl_tp_communicator_worker(
             q.put("NCCL symmetric-memory allocation is not available.")
             return
 
+        input_region = get_symmetric_memory_region(input_tensor)
+        if input_region is None:
+            q.put("Could not resolve NCCL symmetric-memory region.")
+            return
+
         output = cuda_communicator.all_reduce(input_tensor)
         expected = torch.full_like(input_tensor, world_size * (world_size + 1) / 2)
 
         assert output is input_tensor
+        assert input_region[0] in ft_process_group._windows
+        assert input_tensor.data_ptr() in ft_process_group._windows
         torch.testing.assert_close(output, expected)
 
         vocab_size = world_size * 64

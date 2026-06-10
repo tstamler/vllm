@@ -59,14 +59,25 @@ def _is_nccl_symmetric_allocator_enabled():
     ) and not _nccl_allocator_failed_to_compile
 
 
-def is_symmetric_memory_tensor(tensor: torch.Tensor):
+def get_symmetric_memory_region(tensor: torch.Tensor) -> tuple[int, int] | None:
     if not _is_nccl_symmetric_allocator_enabled() or _cached_pool_snapshot is None:
-        return False
+        return None
+
+    tensor_start = tensor.data_ptr()
+    tensor_end = tensor_start + tensor.numel() * tensor.element_size()
+    storage_ptr = tensor.untyped_storage().data_ptr()
     for segment in _cached_pool_snapshot:
-        for block in segment["blocks"]:
-            if block["address"] == tensor.untyped_storage().data_ptr():
-                return True
-    return False
+        segment_start = segment["address"]
+        segment_end = segment_start + segment["total_size"]
+        if not (segment_start <= tensor_start and tensor_end <= segment_end):
+            continue
+        if any(block["address"] == storage_ptr for block in segment["blocks"]):
+            return segment_start, segment["total_size"]
+    return None
+
+
+def is_symmetric_memory_tensor(tensor: torch.Tensor):
+    return get_symmetric_memory_region(tensor) is not None
 
 
 def set_graph_pool_id(graph_pool_id: Any) -> None:

@@ -12,8 +12,8 @@ from vllm.distributed.device_communicators.all_reduce_utils import (
 )
 from vllm.distributed.device_communicators.pynccl import register_nccl_symmetric_ops
 from vllm.distributed.device_communicators.pynccl_allocator import (
+    get_symmetric_memory_region,
     is_symmetric_memory_enabled,
-    is_symmetric_memory_tensor,
 )
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
@@ -306,19 +306,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._check_ft_nccl_ar_eligible(input_, ft_process_group)
             return
 
-        if not is_symmetric_memory_tensor(input_):
+        symmetric_region = get_symmetric_memory_region(input_)
+        if symmetric_region is None:
             raise RuntimeError(
                 "ft_nccl TP all-reduce requires inputs to be allocated in "
                 "registered symmetric memory. This tensor is not in vLLM's "
                 "NCCL symmetric-memory pool. "
                 f"shape={tuple(input_.shape)}, dtype={input_.dtype}, "
                 f"device={input_.device}, stride={input_.stride()}."
-            )
-
-        if input_.data_ptr() != input_.untyped_storage().data_ptr():
-            raise RuntimeError(
-                "ft_nccl TP all-reduce can only register tensors that start at "
-                "their backing storage pointer."
             )
 
         register = getattr(ft_process_group, "register_symmetric_tensor", None)
@@ -338,7 +333,17 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 f"{pg_cls.__module__}.{pg_cls.__qualname__}."
             )
 
-        register(input_)
+        base_ptr, size_bytes = symmetric_region
+        try:
+            if base_ptr not in windows:
+                register(base_ptr=base_ptr, size_bytes=size_bytes)
+            if input_.data_ptr() not in windows:
+                register(input_)
+        except TypeError as e:
+            raise RuntimeError(
+                "ft_nccl TP all-reduce requires an FTProcessGroup whose "
+                "register_symmetric_tensor() supports base_ptr and size_bytes."
+            ) from e
         self._check_ft_nccl_ar_eligible(input_, ft_process_group)
 
     def _check_ft_nccl_ar_eligible(self, input_: torch.Tensor, ft_process_group) -> None:
