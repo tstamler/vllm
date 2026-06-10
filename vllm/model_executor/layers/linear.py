@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
+import weakref
 from abc import abstractmethod
 from contextlib import nullcontext
 
@@ -44,8 +45,38 @@ from vllm.model_executor.parameter import (
 )
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
+from vllm.utils.torch_utils import direct_register_custom_op
 
 logger = init_logger(__name__)
+
+_FT_NCCL_TP_LINEAR_LAYERS = weakref.WeakValueDictionary()
+
+
+def _ft_nccl_tp_linear_apply(
+    input_: torch.Tensor,
+    bias_: torch.Tensor | None,
+    layer_id: str,
+) -> torch.Tensor:
+    layer = _FT_NCCL_TP_LINEAR_LAYERS[layer_id]
+    with layer._maybe_ft_nccl_tp_symm_mem_context():
+        return layer.quant_method.apply(layer, input_, bias_)
+
+
+def _ft_nccl_tp_linear_apply_fake(
+    input_: torch.Tensor,
+    bias_: torch.Tensor | None,
+    layer_id: str,
+) -> torch.Tensor:
+    del bias_
+    layer = _FT_NCCL_TP_LINEAR_LAYERS[layer_id]
+    return input_.new_empty((*input_.shape[:-1], layer.output_size_per_partition))
+
+
+direct_register_custom_op(
+    op_name="ft_nccl_tp_linear_apply",
+    op_func=_ft_nccl_tp_linear_apply,
+    fake_impl=_ft_nccl_tp_linear_apply_fake,
+)
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "UnquantizedLinearMethod",
@@ -1465,6 +1496,8 @@ class RowParallelLinear(LinearBase):
 
         self.input_is_parallel = input_is_parallel
         self.reduce_results = reduce_results
+        self._ft_nccl_tp_layer_id = str(id(self))
+        _FT_NCCL_TP_LINEAR_LAYERS[self._ft_nccl_tp_layer_id] = self
 
         self.quant_method.create_weights(
             layer=self,
@@ -1554,11 +1587,6 @@ class RowParallelLinear(LinearBase):
 
         return nccl_symm_mem_context(pynccl_comm)
 
-    @torch.compiler.disable
-    def _ft_nccl_tp_apply(self, input_: torch.Tensor, bias_: torch.Tensor | None):
-        with self._maybe_ft_nccl_tp_symm_mem_context():
-            return self.quant_method.apply(self, input_, bias_)
-
     def forward(
         self,
         input_,
@@ -1576,7 +1604,9 @@ class RowParallelLinear(LinearBase):
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
         if envs.VLLM_USE_FT_NCCL_TP and self.reduce_results and self.tp_size > 1:
-            output_parallel = self._ft_nccl_tp_apply(input_parallel, bias_)
+            output_parallel = torch.ops.vllm.ft_nccl_tp_linear_apply(
+                input_parallel, bias_, self._ft_nccl_tp_layer_id
+            )
         else:
             output_parallel = self.quant_method.apply(self, input_parallel, bias_)
 

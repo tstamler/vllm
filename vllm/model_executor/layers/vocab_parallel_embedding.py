@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import weakref
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -33,8 +34,36 @@ from vllm.model_executor.layers.utils import dispatch_unquantized_gemm
 from vllm.model_executor.parameter import BasevLLMParameter
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
+from vllm.utils.torch_utils import direct_register_custom_op
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
+_FT_NCCL_TP_EMBEDDING_LAYERS = weakref.WeakValueDictionary()
+
+
+def _ft_nccl_tp_embedding(
+    input_: torch.Tensor,
+    layer_id: str,
+) -> torch.Tensor:
+    layer = _FT_NCCL_TP_EMBEDDING_LAYERS[layer_id]
+    with layer._maybe_ft_nccl_tp_symm_mem_context():
+        return layer.quant_method.embedding(layer, input_.long())
+
+
+def _ft_nccl_tp_embedding_fake(
+    input_: torch.Tensor,
+    layer_id: str,
+) -> torch.Tensor:
+    layer = _FT_NCCL_TP_EMBEDDING_LAYERS[layer_id]
+    return input_.new_empty(
+        (*input_.shape, layer.embedding_dim), dtype=layer.weight.dtype
+    )
+
+
+direct_register_custom_op(
+    op_name="ft_nccl_tp_embedding",
+    op_func=_ft_nccl_tp_embedding,
+    fake_impl=_ft_nccl_tp_embedding_fake,
+)
 
 
 class UnquantizedEmbeddingMethod(QuantizeMethodBase):
@@ -300,6 +329,8 @@ class VocabParallelEmbedding(PluggableLayer):
         self.num_embeddings_per_partition = divide(
             self.num_embeddings_padded, self.tp_size
         )
+        self._ft_nccl_tp_layer_id = str(id(self))
+        _FT_NCCL_TP_EMBEDDING_LAYERS[self._ft_nccl_tp_layer_id] = self
         assert (
             self.shard_indices.num_elements_padded == self.num_embeddings_per_partition
         )
@@ -482,11 +513,6 @@ class VocabParallelEmbedding(PluggableLayer):
 
         return nccl_symm_mem_context(pynccl_comm)
 
-    @torch.compiler.disable
-    def _ft_nccl_tp_embedding(self, input_: torch.Tensor):
-        with self._maybe_ft_nccl_tp_symm_mem_context():
-            return self.quant_method.embedding(self, input_.long())
-
     def forward(self, input_):
         if self.tp_size > 1:
             # Build the mask.
@@ -502,7 +528,9 @@ class VocabParallelEmbedding(PluggableLayer):
             masked_input = input_
         # Get the embeddings.
         if envs.VLLM_USE_FT_NCCL_TP and self.tp_size > 1:
-            output_parallel = self._ft_nccl_tp_embedding(masked_input)
+            output_parallel = torch.ops.vllm.ft_nccl_tp_embedding(
+                masked_input, self._ft_nccl_tp_layer_id
+            )
         else:
             output_parallel = self.quant_method.embedding(self, masked_input.long())
         # Mask the output embedding.
