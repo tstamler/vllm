@@ -1554,6 +1554,11 @@ class RowParallelLinear(LinearBase):
 
         return nccl_symm_mem_context(pynccl_comm)
 
+    @torch.compiler.disable
+    def _ft_nccl_tp_apply(self, input_: torch.Tensor, bias_: torch.Tensor | None):
+        with self._maybe_ft_nccl_tp_symm_mem_context():
+            return self.quant_method.apply(self, input_, bias_)
+
     def forward(
         self,
         input_,
@@ -1570,7 +1575,9 @@ class RowParallelLinear(LinearBase):
         # Only fuse bias add into GEMM for rank 0 (this ensures that
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
-        with self._maybe_ft_nccl_tp_symm_mem_context():
+        if envs.VLLM_USE_FT_NCCL_TP and self.reduce_results and self.tp_size > 1:
+            output_parallel = self._ft_nccl_tp_apply(input_parallel, bias_)
+        else:
             output_parallel = self.quant_method.apply(self, input_parallel, bias_)
 
         if self.reduce_results and self.tp_size > 1:

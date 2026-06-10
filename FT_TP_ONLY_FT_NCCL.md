@@ -112,6 +112,10 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    is created, before Dynamo traces model forwards. This avoids tracing the
    filesystem checks used by PyTorch extension loading.
 
+   The allocation-producing `RowParallelLinear` and `VocabParallelEmbedding`
+   FT helpers are marked with `torch.compiler.disable` so Dynamo does not
+   trace the symmetric-memory context manager.
+
 ## Suggested First Milestone
 
 Implement only this path:

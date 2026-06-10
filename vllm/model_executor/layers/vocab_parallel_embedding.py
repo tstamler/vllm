@@ -482,6 +482,11 @@ class VocabParallelEmbedding(PluggableLayer):
 
         return nccl_symm_mem_context(pynccl_comm)
 
+    @torch.compiler.disable
+    def _ft_nccl_tp_embedding(self, input_: torch.Tensor):
+        with self._maybe_ft_nccl_tp_symm_mem_context():
+            return self.quant_method.embedding(self, input_.long())
+
     def forward(self, input_):
         if self.tp_size > 1:
             # Build the mask.
@@ -496,7 +501,9 @@ class VocabParallelEmbedding(PluggableLayer):
         else:
             masked_input = input_
         # Get the embeddings.
-        with self._maybe_ft_nccl_tp_symm_mem_context():
+        if envs.VLLM_USE_FT_NCCL_TP and self.tp_size > 1:
+            output_parallel = self._ft_nccl_tp_embedding(masked_input)
+        else:
             output_parallel = self.quant_method.embedding(self, masked_input.long())
         # Mask the output embedding.
         if self.tp_size > 1:
