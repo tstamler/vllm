@@ -108,6 +108,10 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    The FT TP flag enables this allocator path without enabling vLLM's existing
    NCCL symmetric-memory all-reduce copy path.
 
+   The NCCL symmetric allocator is initialized when the TP CUDA communicator
+   is created, before Dynamo traces model forwards. This avoids tracing the
+   filesystem checks used by PyTorch extension loading.
+
 ## Suggested First Milestone
 
 Implement only this path:

@@ -12,6 +12,7 @@ from vllm.distributed.device_communicators.all_reduce_utils import (
 )
 from vllm.distributed.device_communicators.pynccl import register_nccl_symmetric_ops
 from vllm.distributed.device_communicators.pynccl_allocator import (
+    get_nccl_mem_pool,
     get_symmetric_memory_region,
     is_symmetric_memory_enabled,
 )
@@ -80,6 +81,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
             if is_symmetric_memory_enabled():
                 register_nccl_symmetric_ops(self.pynccl_comm)
+            if envs.VLLM_USE_FT_NCCL_TP and unique_name.split(":")[0] == "tp":
+                # Compile/load the NCCL symmetric allocator before Dynamo traces
+                # TP layer forwards. Doing this lazily inside the forward path can
+                # make Dynamo trace filesystem checks from torch extension loading.
+                get_nccl_mem_pool()
 
         self.ca_comm: CustomAllreduce | None = None
         self.qr_comm: QuickAllReduce | None = None
