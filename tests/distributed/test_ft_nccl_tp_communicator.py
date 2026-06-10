@@ -50,6 +50,7 @@ def ft_nccl_tp_communicator_worker(
 
         m.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         m.setenv("VLLM_USE_FT_NCCL_TP", "1")
+        m.setenv("VLLM_FT_NCCL_MAX_COUNT", "2048")
         m.setenv("NCCL_NVLS_ENABLE", "1")
         m.setenv("NCCL_CUMEM_ENABLE", "1")
 
@@ -87,6 +88,12 @@ def ft_nccl_tp_communicator_worker(
                 f"{pg_cls.__module__}.{pg_cls.__qualname__} does not expose "
                 "register_symmetric_tensor(). Use an ft_collective build with "
                 "external symmetric tensor registration support."
+            )
+            return
+        if getattr(ft_process_group, "_max_count", None) != 2048:
+            q.put(
+                "ft_nccl process group did not use VLLM_FT_NCCL_MAX_COUNT; "
+                f"got {getattr(ft_process_group, '_max_count', None)}."
             )
             return
 

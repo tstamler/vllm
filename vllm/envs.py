@@ -112,6 +112,7 @@ if TYPE_CHECKING:
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_FT_NCCL_TP: bool = False
+    VLLM_FT_NCCL_MAX_COUNT: int = 16 * 1024 * 1024
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
@@ -1084,6 +1085,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Use ft_collective's ft_nccl backend for TP all-reduce.
     "VLLM_USE_FT_NCCL_TP": lambda: (
         os.getenv("VLLM_USE_FT_NCCL_TP", "False").lower() in ("true", "1")
+    ),
+    # Maximum elements per rank for ft_nccl TP all-reduce scratch buffers.
+    "VLLM_FT_NCCL_MAX_COUNT": lambda: int(
+        os.getenv("VLLM_FT_NCCL_MAX_COUNT", str(16 * 1024 * 1024))
     ),
     # Optional: enable external Oink custom ops (e.g., Blackwell RMSNorm).
     # Disabled by default.

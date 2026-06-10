@@ -25,6 +25,7 @@ If you only need to use the distributed environment without model/pipeline
 
 import contextlib
 import gc
+import importlib
 import pickle
 import weakref
 from collections import namedtuple
@@ -125,6 +126,35 @@ _groups: dict[str, Callable[[], "GroupCoordinator | None"]] = {}
 
 def _register_group(group: "GroupCoordinator") -> None:
     _groups[group.unique_name] = weakref.ref(group)
+
+
+def _configure_ft_nccl_process_group(ft_collective) -> None:
+    max_count = envs.VLLM_FT_NCCL_MAX_COUNT
+    if max_count <= 0:
+        raise ValueError("VLLM_FT_NCCL_MAX_COUNT must be positive.")
+
+    ft_pg_module = importlib.import_module("ft_collective.ft_process_group")
+    base_cls = getattr(
+        ft_pg_module.FTProcessGroup,
+        "_vllm_base_cls",
+        ft_pg_module.FTProcessGroup,
+    )
+    if getattr(ft_pg_module.FTProcessGroup, "_vllm_max_count", None) == max_count:
+        return
+
+    class VllmFTProcessGroup(base_cls):
+        _vllm_base_cls = base_cls
+        _vllm_max_count = max_count
+
+        def __init__(self, store, rank: int, world_size: int, timeout=None, **kwargs):
+            kwargs.setdefault("max_count", max_count)
+            super().__init__(store, rank, world_size, timeout=timeout, **kwargs)
+
+    VllmFTProcessGroup.__name__ = "VllmFTProcessGroup"
+    VllmFTProcessGroup.__qualname__ = "VllmFTProcessGroup"
+    ft_pg_module.FTProcessGroup = VllmFTProcessGroup
+    ft_collective.FTProcessGroup = VllmFTProcessGroup
+    logger.info("Configured ft_nccl TP max_count=%d.", max_count)
 
 
 def all_reduce(tensor: torch.Tensor, group_name: str) -> torch.Tensor:
@@ -1597,12 +1627,13 @@ def initialize_model_parallel(
     tp_backend = backend
     if envs.VLLM_USE_FT_NCCL_TP and tensor_model_parallel_size > 1:
         try:
-            import ft_collective  # noqa: F401
+            import ft_collective
         except ImportError as e:
             raise RuntimeError(
                 "VLLM_USE_FT_NCCL_TP=1 requires ft_collective to be "
                 "importable so it can register the 'ft_nccl' backend."
             ) from e
+        _configure_ft_nccl_process_group(ft_collective)
         tp_backend = "ft_nccl"
         logger.info("Using ft_nccl backend for tensor-parallel groups.")
     # message queue broadcaster is only used in tensor model parallel group
