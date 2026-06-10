@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import atexit
 import contextlib
+import importlib.util
+import os
 import tempfile
 from typing import Any
 
@@ -72,6 +74,35 @@ def set_graph_pool_id(graph_pool_id: Any) -> None:
     _graph_pool_id = graph_pool_id
 
 
+def _find_nccl_library_file() -> str | None:
+    nccl_so_path = envs.VLLM_NCCL_SO_PATH
+    if nccl_so_path and os.path.exists(nccl_so_path):
+        return nccl_so_path
+
+    try:
+        spec = importlib.util.find_spec("nvidia.nccl")
+        if spec and (locs := getattr(spec, "submodule_search_locations", None)):
+            for loc in locs:
+                lib_dir = os.path.join(loc, "lib")
+                for lib_name in ("libnccl.so", "libnccl.so.2"):
+                    lib_path = os.path.join(lib_dir, lib_name)
+                    if os.path.exists(lib_path):
+                        return lib_path
+    except Exception as e:
+        logger.debug("Failed to find nccl library from nvidia.nccl package: %s", e)
+
+    return None
+
+
+def _get_nccl_allocator_ldflags() -> list[str]:
+    nccl_lib_path = _find_nccl_library_file()
+    if nccl_lib_path is None:
+        return ["-lnccl"]
+
+    nccl_lib_dir = os.path.dirname(nccl_lib_path)
+    return [nccl_lib_path, f"-Wl,-rpath,{nccl_lib_dir}"]
+
+
 def compile_nccl_allocator():
     global _allocator, _allocator_wrapper, _nccl_allocator_failed_to_compile
     if not current_platform.is_cuda():
@@ -85,7 +116,7 @@ def compile_nccl_allocator():
             name=nccl_allocator_libname,
             cpp_sources=nccl_allocator_source,
             with_cuda=True,
-            extra_ldflags=["-lnccl"],
+            extra_ldflags=_get_nccl_allocator_ldflags(),
             verbose=envs.VLLM_LOGGING_LEVEL == "DEBUG",
             is_python_module=False,
             build_directory=out_dir,
@@ -104,7 +135,8 @@ def compile_nccl_allocator():
             "Symmetric memory will be disabled. "
             "This is expected if NCCL headers are not available. "
             "optionally set VLLM_NCCL_INCLUDE_PATH to point to a directory "
-            "containing the NCCL header. "
+            "containing the NCCL header, and VLLM_NCCL_SO_PATH or "
+            "LD_LIBRARY_PATH to point to the NCCL shared library. "
             "Error: %s",
             str(e),
         )
