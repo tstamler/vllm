@@ -310,7 +310,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
             raise RuntimeError(
                 "ft_nccl TP all-reduce requires inputs to be allocated in "
                 "registered symmetric memory. This tensor is not in vLLM's "
-                "NCCL symmetric-memory pool."
+                "NCCL symmetric-memory pool. "
+                f"shape={tuple(input_.shape)}, dtype={input_.dtype}, "
+                f"device={input_.device}, stride={input_.stride()}."
             )
 
         if input_.data_ptr() != input_.untyped_storage().data_ptr():

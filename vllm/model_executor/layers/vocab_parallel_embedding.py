@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -11,9 +12,13 @@ from torch.nn.parameter import Parameter, UninitializedParameter
 import vllm.envs as envs
 from vllm.distributed import (
     divide,
+    get_tp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
+)
+from vllm.distributed.device_communicators.pynccl_allocator import (
+    nccl_symm_mem_context,
 )
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.batch_invariant import (
@@ -467,6 +472,16 @@ class VocabParallelEmbedding(PluggableLayer):
         param[: loaded_weight.shape[0]].data.copy_(loaded_weight)
         param[loaded_weight.shape[0] :].data.fill_(0)
 
+    def _maybe_ft_nccl_tp_symm_mem_context(self):
+        if not (envs.VLLM_USE_FT_NCCL_TP and self.tp_size > 1):
+            return nullcontext()
+
+        pynccl_comm = getattr(get_tp_group().device_communicator, "pynccl_comm", None)
+        if pynccl_comm is None or pynccl_comm.disabled:
+            return nullcontext()
+
+        return nccl_symm_mem_context(pynccl_comm)
+
     def forward(self, input_):
         if self.tp_size > 1:
             # Build the mask.
@@ -481,7 +496,8 @@ class VocabParallelEmbedding(PluggableLayer):
         else:
             masked_input = input_
         # Get the embeddings.
-        output_parallel = self.quant_method.embedding(self, masked_input.long())
+        with self._maybe_ft_nccl_tp_symm_mem_context():
+            output_parallel = self.quant_method.embedding(self, masked_input.long())
         # Mask the output embedding.
         if self.tp_size > 1:
             output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)

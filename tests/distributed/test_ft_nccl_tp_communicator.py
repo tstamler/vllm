@@ -23,6 +23,7 @@ from vllm.distributed.parallel_state import (
     init_distributed_environment,
     initialize_model_parallel,
 )
+from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from vllm.platforms import current_platform
 from vllm.utils.network_utils import get_open_port
 from vllm.utils.system_utils import update_environment_variables
@@ -117,6 +118,27 @@ def ft_nccl_tp_communicator_worker(
 
         assert output is input_tensor
         torch.testing.assert_close(output, expected)
+
+        vocab_size = world_size * 64
+        embedding_dim = 8
+        embedding = VocabParallelEmbedding(
+            vocab_size,
+            embedding_dim,
+            params_dtype=dtype,
+        )
+        with torch.no_grad():
+            embedding.weight.fill_(local_rank + 1)
+
+        token_ids = torch.arange(world_size, dtype=torch.long, device=device) * 64
+        embedding_output = embedding(token_ids)
+        expected_embedding_output = torch.arange(
+            1,
+            world_size + 1,
+            dtype=dtype,
+            device=device,
+        ).unsqueeze(-1).expand(world_size, embedding_dim)
+
+        torch.testing.assert_close(embedding_output, expected_embedding_output)
 
 
 @pytest.mark.skipif(
