@@ -50,8 +50,15 @@ def is_symmetric_memory_enabled():
     return envs.VLLM_USE_NCCL_SYMM_MEM and not _nccl_allocator_failed_to_compile
 
 
+def _is_nccl_symmetric_allocator_enabled():
+    global _nccl_allocator_failed_to_compile
+    return (
+        envs.VLLM_USE_NCCL_SYMM_MEM or envs.VLLM_USE_FT_NCCL_TP
+    ) and not _nccl_allocator_failed_to_compile
+
+
 def is_symmetric_memory_tensor(tensor: torch.Tensor):
-    if not is_symmetric_memory_enabled() or _cached_pool_snapshot is None:
+    if not _is_nccl_symmetric_allocator_enabled() or _cached_pool_snapshot is None:
         return False
     for segment in _cached_pool_snapshot:
         for block in segment["blocks"]:
@@ -134,7 +141,7 @@ class nccl_symm_mem_context:
     ):
         self.disabled = (
             disabled
-            or not is_symmetric_memory_enabled()
+            or not _is_nccl_symmetric_allocator_enabled()
             or pynccl_comm.world_size == 1
             or not current_platform.is_cuda()
             or get_nccl_mem_pool() is None

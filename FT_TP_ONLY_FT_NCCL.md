@@ -81,6 +81,17 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    The existing `ft_collective.get_ft_process_group()` registry is rank-keyed,
    which is probably not precise enough once vLLM creates multiple groups.
 
+6. Allocate the dense TP all-reduce input from symmetric memory.
+
+   For `RowParallelLinear`, wrap the `quant_method.apply(...)` output
+   allocation in `nccl_symm_mem_context(...)` when `VLLM_USE_FT_NCCL_TP=1`.
+   This makes the GEMM output itself a vLLM NCCL symmetric-memory tensor, so
+   the FT communicator can register it directly with
+   `register_symmetric_tensor()` before the in-place all-reduce.
+
+   The FT TP flag enables this allocator path without enabling vLLM's existing
+   NCCL symmetric-memory all-reduce copy path.
+
 ## Suggested First Milestone
 
 Implement only this path:
@@ -89,7 +100,8 @@ Implement only this path:
 - import/register `ft_collective`
 - TP group backend becomes `"ft_nccl"`
 - `CudaCommunicator.all_reduce` special-cases `unique_name.split(":")[0] == "tp"`
-- already-symmetric TP inputs are registered and reduced directly
+- `RowParallelLinear` allocates TP all-reduce inputs from symmetric memory
+- symmetric TP inputs are registered and reduced directly
 - other TP inputs raise an error
 
 Everything else should stay on the existing vLLM communication paths.

@@ -3,6 +3,7 @@
 
 import itertools
 from abc import abstractmethod
+from contextlib import nullcontext
 
 import torch
 from torch.nn.parameter import Parameter, UninitializedParameter
@@ -10,11 +11,15 @@ from torch.nn.parameter import Parameter, UninitializedParameter
 import vllm.envs as envs
 from vllm.distributed import (
     divide,
+    get_tp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     split_tensor_along_last_dim,
     tensor_model_parallel_all_gather,
     tensor_model_parallel_all_reduce,
+)
+from vllm.distributed.device_communicators.pynccl_allocator import (
+    nccl_symm_mem_context,
 )
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
@@ -1537,6 +1542,18 @@ class RowParallelLinear(LinearBase):
 
         param.load_row_parallel_weight(loaded_weight=loaded_weight)
 
+    def _maybe_ft_nccl_tp_symm_mem_context(self):
+        if not (
+            envs.VLLM_USE_FT_NCCL_TP and self.reduce_results and self.tp_size > 1
+        ):
+            return nullcontext()
+
+        pynccl_comm = getattr(get_tp_group().device_communicator, "pynccl_comm", None)
+        if pynccl_comm is None or pynccl_comm.disabled:
+            return nullcontext()
+
+        return nccl_symm_mem_context(pynccl_comm)
+
     def forward(
         self,
         input_,
@@ -1553,7 +1570,8 @@ class RowParallelLinear(LinearBase):
         # Only fuse bias add into GEMM for rank 0 (this ensures that
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
-        output_parallel = self.quant_method.apply(self, input_parallel, bias_)
+        with self._maybe_ft_nccl_tp_symm_mem_context():
+            output_parallel = self.quant_method.apply(self, input_parallel, bias_)
 
         if self.reduce_results and self.tp_size > 1:
             output = tensor_model_parallel_all_reduce(output_parallel)
