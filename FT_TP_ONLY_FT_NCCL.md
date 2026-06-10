@@ -41,10 +41,11 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    ```
 
    The FT all-reduce kernel also preallocates scratch buffers sized by element
-   count. vLLM configures this with:
+   count. `ft_collective` defaults this to 4M elements and can override it
+   with:
 
    ```text
-   VLLM_FT_NCCL_MAX_COUNT=16777216
+   FT_NCCL_MAX_COUNT=16777216
    ```
 
    This must be at least as large as the largest TP all-reduce input numel
@@ -110,7 +111,7 @@ Implement only this path:
 
 - `VLLM_USE_FT_NCCL_TP=1`
 - import/register `ft_collective`
-- configure `VLLM_FT_NCCL_MAX_COUNT`
+- optionally configure `FT_NCCL_MAX_COUNT`
 - TP group backend becomes `"ft_nccl"`
 - `CudaCommunicator.all_reduce` special-cases `unique_name.split(":")[0] == "tp"`
 - `RowParallelLinear` and `VocabParallelEmbedding` allocate TP all-reduce
