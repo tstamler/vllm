@@ -69,7 +69,6 @@ build_engine_args() {
     --max-model-len "$MAX_MODEL_LEN"
     --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
-    --disable-log-requests
   )
 
   if [[ -n "$SERVED_MODEL_NAME" ]]; then
