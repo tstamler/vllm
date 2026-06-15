@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import weakref
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -37,7 +36,10 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import direct_register_custom_op
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
-_FT_NCCL_TP_EMBEDDING_LAYERS = weakref.WeakValueDictionary()
+# Torch compile / CUDA graph replay stores layer_id as a constant. Keep a
+# process-lifetime strong reference so replay cannot outlive a weak registry
+# entry created during model initialization.
+_FT_NCCL_TP_EMBEDDING_LAYERS: dict[str, torch.nn.Module] = {}
 
 
 def _ft_nccl_tp_embedding(

@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-import weakref
 from abc import abstractmethod
 from contextlib import nullcontext
 
@@ -49,7 +48,10 @@ from vllm.utils.torch_utils import direct_register_custom_op
 
 logger = init_logger(__name__)
 
-_FT_NCCL_TP_LINEAR_LAYERS = weakref.WeakValueDictionary()
+# Torch compile / CUDA graph replay stores layer_id as a constant. Keep a
+# process-lifetime strong reference so replay cannot outlive a weak registry
+# entry created during model initialization.
+_FT_NCCL_TP_LINEAR_LAYERS: dict[str, torch.nn.Module] = {}
 
 
 def _ft_nccl_tp_linear_apply(
