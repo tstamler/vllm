@@ -112,6 +112,9 @@ if TYPE_CHECKING:
     VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_FT_NCCL_TP: bool = False
+    VLLM_FT_NCCL_TP_ACTIVE_MASK: bool = False
+    VLLM_FT_NCCL_TP_INJECT_FAIL_RANK: int = -1
+    VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N: int = -1
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
@@ -1084,6 +1087,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Use ft_collective's ft_nccl backend for TP all-reduce.
     "VLLM_USE_FT_NCCL_TP": lambda: (
         os.getenv("VLLM_USE_FT_NCCL_TP", "False").lower() in ("true", "1")
+    ),
+    # Demo mode: synchronize after FT TP all-reduce to read/update the
+    # ft_collective active mask instead of failing immediately on timeout.
+    "VLLM_FT_NCCL_TP_ACTIVE_MASK": lambda: (
+        os.getenv("VLLM_FT_NCCL_TP_ACTIVE_MASK", "False").lower() in ("true", "1")
+    ),
+    # Demo-only fault injection. A matching TP rank skips one FT all-reduce and
+    # sleeps past the FT timeout so surviving ranks can observe a mask shrink.
+    "VLLM_FT_NCCL_TP_INJECT_FAIL_RANK": lambda: int(
+        os.getenv("VLLM_FT_NCCL_TP_INJECT_FAIL_RANK", "-1")
+    ),
+    "VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N": lambda: int(
+        os.getenv("VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N", "-1")
     ),
     # Optional: enable external Oink custom ops (e.g., Blackwell RMSNorm).
     # Disabled by default.

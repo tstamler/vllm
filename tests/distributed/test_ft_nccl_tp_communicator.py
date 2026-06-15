@@ -7,6 +7,7 @@ import typing
 
 import pytest
 import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import vllm.envs as envs
@@ -156,6 +157,100 @@ def ft_nccl_tp_communicator_worker(
         torch.testing.assert_close(embedding_output, expected_embedding_output)
 
 
+def ft_nccl_tp_active_mask_worker(
+    local_rank: int,
+    world_size: int,
+    master_port: int,
+    q: mp.Queue,
+):
+    monkeypatch = pytest.MonkeyPatch()
+    with monkeypatch.context() as m:
+        try:
+            import ft_collective  # noqa: F401
+        except ImportError:
+            q.put("ft_collective is not importable.")
+            return
+
+        m.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        m.setenv("VLLM_USE_FT_NCCL_TP", "1")
+        m.setenv("VLLM_FT_NCCL_TP_ACTIVE_MASK", "1")
+        m.setenv("VLLM_FT_NCCL_TP_INJECT_FAIL_RANK", "1")
+        m.setenv("VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N", "2")
+        m.setenv("FT_NCCL_MAX_COUNT", "2048")
+        m.setenv("FT_TIMEOUT_US", "1000000")
+        m.setenv("NCCL_NVLS_ENABLE", "1")
+        m.setenv("NCCL_CUMEM_ENABLE", "1")
+
+        dtype = torch.float32
+        device = torch.device(f"cuda:{local_rank}")
+        torch.accelerator.set_device_index(device)
+        torch.set_default_device(device)
+        torch.set_default_dtype(dtype)
+        update_environment_variables(
+            {
+                "RANK": str(local_rank),
+                "LOCAL_RANK": str(local_rank),
+                "WORLD_SIZE": str(world_size),
+                "MASTER_ADDR": "localhost",
+                "MASTER_PORT": str(master_port),
+            }
+        )
+
+        try:
+            init_distributed_environment()
+            with ensure_current_vllm_config():
+                initialize_model_parallel(tensor_model_parallel_size=world_size)
+
+            cuda_communicator = typing.cast(
+                CudaCommunicator, get_tp_group().device_communicator
+            )
+            ft_process_group = ft_collective.get_ft_process_group()
+            if ft_process_group is None:
+                q.put("ft_collective did not register an FTProcessGroup.")
+                return
+            if not hasattr(ft_process_group, "get_result_mask"):
+                q.put("FTProcessGroup does not expose get_result_mask().")
+                return
+
+            pynccl_comm = cuda_communicator.pynccl_comm
+            if pynccl_comm is None or pynccl_comm.disabled:
+                q.put("PyNCCL communicator is not available.")
+                return
+            if get_nccl_mem_pool() is None:
+                q.put("NCCL allocator compilation failed.")
+                return
+
+            with nccl_symm_mem_context(pynccl_comm):
+                input_tensor = torch.full(
+                    (TEST_SIZE_ELEMENTS,),
+                    local_rank + 1,
+                    dtype=dtype,
+                    device=device,
+                )
+
+            if not is_symmetric_memory_tensor(input_tensor):
+                q.put("NCCL symmetric-memory allocation is not available.")
+                return
+
+            output = cuda_communicator.all_reduce(input_tensor)
+            expected = torch.full_like(input_tensor, world_size * (world_size + 1) / 2)
+            torch.testing.assert_close(output, expected)
+            assert cuda_communicator.ft_active_mask == (True, True)
+
+            input_tensor.fill_(local_rank + 10)
+            output = cuda_communicator.all_reduce(input_tensor)
+            dist.barrier(group=cuda_communicator.cpu_group)
+
+            assert cuda_communicator.ft_active_mask == (True, False)
+            if local_rank == 0:
+                torch.testing.assert_close(output, torch.full_like(input_tensor, 10))
+        except Exception as e:
+            q.put(str(e))
+            raise
+        finally:
+            cleanup_dist_env_and_memory()
+
+
 @pytest.mark.skipif(
     not current_platform.is_cuda(),
     reason="ft_nccl TP communicator smoke test is only available on CUDA.",
@@ -169,6 +264,32 @@ def test_ft_nccl_tp_communicator_smoke():
     q = mp.get_context("spawn").Queue()
     mp.spawn(
         ft_nccl_tp_communicator_worker,
+        args=(world_size, get_open_port(), q),
+        nprocs=world_size,
+    )
+    try:
+        val = q.get(timeout=1)
+    except queue.Empty:
+        val = None
+    finally:
+        cleanup_dist_env_and_memory()
+        if val is not None:
+            pytest.skip(val)
+
+
+@pytest.mark.skipif(
+    not current_platform.is_cuda(),
+    reason="ft_nccl TP active-mask test is only available on CUDA.",
+)
+@pytest.mark.skipif(envs.VLLM_TARGET_DEVICE not in ["cuda"], reason="Only test on CUDA")
+def test_ft_nccl_tp_active_mask_demo():
+    world_size = 2
+    if world_size > torch.accelerator.device_count():
+        pytest.skip("Not enough GPUs to run the test.")
+
+    q = mp.get_context("spawn").Queue()
+    mp.spawn(
+        ft_nccl_tp_active_mask_worker,
         args=(world_size, get_open_port(), q),
         nprocs=world_size,
     )

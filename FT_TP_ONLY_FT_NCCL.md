@@ -83,12 +83,14 @@ for TP if the goal is to route TP collectives through `ft_nccl`.
    ```python
    ft_pg.register_symmetric_tensor(base_ptr=segment_ptr, size_bytes=segment_size)
    ft_pg.register_symmetric_tensor(input_)  # alias within the segment
-   torch.distributed.all_reduce(input_, group=self.device_group)
+   work = ft_pg.allreduce([input_])
+   work.wait()
    return input_
    ```
 
-   This direct path is in-place. It avoids staging copies, but it depends on
-   the TP producer treating the all-reduce input as disposable.
+   This direct path is in-place. It avoids staging copies and PyTorch c10d
+   wait/watchdog behavior, but it depends on the TP producer treating the
+   all-reduce input as disposable.
 
    If the TP input cannot be used directly with `ft_nccl`, the communicator
    raises an error instead of copying through a staging buffer.
@@ -138,7 +140,41 @@ Everything else should stay on the existing vLLM communication paths.
 - EP `reduce_scatterv`
 - native FT reduce-scatter
 - variadic FT all-gather
-- continuing execution with partial-rank result masks
+- full service-level recovery after a TP rank fails
 
 For the first TP-only version, treat an FT timeout as a fail-fast condition
 unless a higher-level recovery policy is added later.
+
+## Active-Mask Demo Mode
+
+This branch includes a demo-only active-mask mode for showing the benefit of
+FT collectives on the TP path:
+
+```text
+VLLM_FT_NCCL_TP_ACTIVE_MASK=1
+```
+
+When enabled, `CudaCommunicator` tracks the last FT active mask and checks the
+FT error flag after each FT TP all-reduce. If a timeout is reported, it calls
+`FTProcessGroup.get_result_mask()` to synchronize, read the result mask, and
+let `ft_collective` update the internal input mask. This is a simple way to
+demonstrate that surviving ranks can observe a mask shrink instead of hanging
+indefinitely.
+
+There is also a deterministic fault-injection path:
+
+```text
+VLLM_FT_NCCL_TP_INJECT_FAIL_RANK=1
+VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N=2
+FT_TIMEOUT_US=1000000
+```
+
+At the selected call count, vLLM pre-shrinks the FT mask on all ranks to
+exclude the injected TP rank. The injected rank then skips that FT TP
+all-reduce while surviving ranks launch it using the shrunken mask. Surviving
+ranks can then observe an active mask such as `[1, 0]` and complete the
+collective without the injected rank's contribution.
+
+This does not make dense TP model outputs correct after a rank is lost. It only
+demonstrates that the TP collective path can return a recoverable mask signal
+instead of blocking forever.

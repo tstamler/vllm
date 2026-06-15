@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-
 import torch
 from torch.distributed import ProcessGroup
 
@@ -93,6 +91,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self.fi_ar_comm: FlashInferAllReduce | None = None
         self._ft_process_group = None
         self._ft_ok_status = None
+        self._ft_active_mask: tuple[bool, ...] | None = None
+        self._ft_all_reduce_count = 0
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -279,20 +279,137 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_ok_status = FT_OK
         return ft_process_group
 
+    @property
+    def ft_active_mask(self) -> tuple[bool, ...] | None:
+        return self._ft_active_mask
+
     def _ft_nccl_tp_all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         ft_process_group = self._get_ft_process_group()
         self._ensure_ft_nccl_input(input_, ft_process_group)
-        torch.distributed.all_reduce(input_, group=self.device_group)
+        self._ft_all_reduce_count += 1
+        skip_collective = self._maybe_inject_ft_nccl_tp_failure(ft_process_group)
+        if envs.VLLM_FT_NCCL_TP_ACTIVE_MASK:
+            pre_sync = getattr(ft_process_group, "pre_sync", None)
+            if pre_sync is not None:
+                pre_sync()
+        if skip_collective:
+            return input_
+        work = ft_process_group.allreduce([input_])
+        work.wait()
         self._check_ft_nccl_status(ft_process_group)
         return input_
 
+    def _maybe_inject_ft_nccl_tp_failure(self, ft_process_group) -> bool:
+        fail_rank = envs.VLLM_FT_NCCL_TP_INJECT_FAIL_RANK
+        fail_after_n = envs.VLLM_FT_NCCL_TP_INJECT_FAIL_AFTER_N
+        if fail_rank < 0 or fail_after_n < 0:
+            return False
+        if self._ft_all_reduce_count != fail_after_n:
+            return False
+        if not envs.VLLM_FT_NCCL_TP_ACTIVE_MASK:
+            return False
+
+        if fail_rank >= self.world_size:
+            raise RuntimeError(
+                "VLLM_FT_NCCL_TP_INJECT_FAIL_RANK must be smaller than TP "
+                f"world size; got {fail_rank} for world size {self.world_size}."
+            )
+
+        mask = [True] * self.world_size
+        mask[fail_rank] = False
+        self._set_ft_active_mask_for_demo(ft_process_group, mask)
+
+        logger.warning(
+            "Injecting FT NCCL TP active-mask failure for TP rank %d at call "
+            "%d; local TP rank %d will %s the collective with mask %s.",
+            fail_rank,
+            self._ft_all_reduce_count,
+            self.rank_in_group,
+            "skip" if self.rank_in_group == fail_rank else "enter",
+            [int(active) for active in mask],
+        )
+        return self.rank_in_group == fail_rank
+
+    def _set_ft_active_mask_for_demo(
+        self, ft_process_group, mask: list[bool]
+    ) -> None:
+        ft_lib = getattr(ft_process_group, "_ft", None)
+        handle = getattr(ft_process_group, "_handle", None)
+        size = getattr(ft_process_group, "_size", self.world_size)
+        active_mask = getattr(ft_process_group, "_active", None)
+        set_mask = getattr(ft_lib, "handle_set_mask", None)
+        if ft_lib is None or handle is None or set_mask is None:
+            raise RuntimeError(
+                "FT NCCL TP fault injection requires an FTProcessGroup with "
+                "private _ft.handle_set_mask() support."
+            )
+        if active_mask is not None:
+            active_mask[:] = mask
+        set_mask(handle, mask, size)
+        self._update_ft_active_mask(tuple(mask))
+
     def _check_ft_nccl_status(self, ft_process_group) -> None:
+        if envs.VLLM_FT_NCCL_TP_ACTIVE_MASK:
+            if self._ft_active_mask is None:
+                self._update_ft_active_mask(tuple([True] * self.world_size))
+
+            if envs.VLLM_FT_NCCL_TP_INJECT_FAIL_RANK >= 0:
+                get_result_mask = getattr(ft_process_group, "get_result_mask", None)
+                if get_result_mask is None:
+                    raise RuntimeError(
+                        "VLLM_FT_NCCL_TP_ACTIVE_MASK=1 requires an "
+                        "FTProcessGroup with get_result_mask()."
+                    )
+                mask = tuple(bool(active) for active in get_result_mask())
+                self._update_ft_active_mask(mask)
+                return
+
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                clear_error = getattr(ft_process_group, "clear_error", None)
+                if clear_error is not None:
+                    clear_error()
+                return
+
+            get_result_mask = getattr(ft_process_group, "get_result_mask", None)
+            if get_result_mask is None:
+                raise RuntimeError(
+                    "VLLM_FT_NCCL_TP_ACTIVE_MASK=1 requires an FTProcessGroup "
+                    "with get_result_mask()."
+                )
+
+            mask = tuple(bool(active) for active in get_result_mask())
+            self._update_ft_active_mask(mask)
+            if self.rank_in_group < len(mask) and not mask[self.rank_in_group]:
+                if envs.VLLM_FT_NCCL_TP_INJECT_FAIL_RANK >= 0:
+                    return
+                raise RuntimeError(
+                    "This process is no longer active in the FT NCCL TP group: "
+                    f"rank_in_group={self.rank_in_group}, "
+                    f"active_mask={[int(active) for active in mask]}."
+                )
+            return
+
         if hasattr(ft_process_group, "check_and_clear_error"):
             status = ft_process_group.check_and_clear_error()
         else:
             status = ft_process_group.get_error()
         if status != self._ft_ok_status:
             raise RuntimeError(f"ft_nccl TP all-reduce failed with status {status}.")
+
+    def _update_ft_active_mask(self, mask: tuple[bool, ...]) -> None:
+        if self._ft_active_mask == mask:
+            return
+        failed_ranks = [rank for rank, active in enumerate(mask) if not active]
+        log_fn = logger.warning if failed_ranks else logger.info
+        log_fn(
+            "FT NCCL TP active mask for group '%s' is now %s; inactive TP "
+            "ranks: %s.",
+            self.unique_name or "<unnamed>",
+            [int(active) for active in mask],
+            failed_ranks,
+        )
+        self._ft_active_mask = mask
 
     def _ensure_ft_nccl_input(self, input_: torch.Tensor, ft_process_group) -> None:
         if not input_.is_contiguous():
