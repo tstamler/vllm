@@ -285,7 +285,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
     def _ft_nccl_tp_all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         ft_process_group = self._get_ft_process_group()
-        self._ensure_ft_nccl_input(input_, ft_process_group)
+        self._ensure_ft_nccl_input(input_, ft_process_group, "allreduce")
         self._ft_all_reduce_count += 1
         skip_collective = self._maybe_inject_ft_nccl_tp_failure(ft_process_group)
         if envs.VLLM_FT_NCCL_TP_ACTIVE_MASK:
@@ -298,6 +298,32 @@ class CudaCommunicator(DeviceCommunicatorBase):
         work.wait()
         self._check_ft_nccl_status(ft_process_group)
         return input_
+
+    def _ft_nccl_tp_all_gather(
+        self, input_: torch.Tensor, dim: int = -1
+    ) -> torch.Tensor:
+        ft_process_group = self._get_ft_process_group()
+        self._ensure_ft_nccl_input(input_, ft_process_group, "allgather")
+
+        if dim < 0:
+            dim += input_.dim()
+        input_size = input_.size()
+
+        output_chunks = torch.empty(
+            (self.world_size,) + input_size,
+            dtype=input_.dtype,
+            device=input_.device,
+        )
+        work = ft_process_group.allgather([list(output_chunks.unbind(0))], [input_])
+        work.wait()
+        self._check_ft_nccl_status(ft_process_group)
+
+        output_tensor = output_chunks.movedim(0, dim)
+        return output_tensor.reshape(
+            input_size[:dim]
+            + (self.world_size * input_size[dim],)
+            + input_size[dim + 1 :]
+        )
 
     def _maybe_inject_ft_nccl_tp_failure(self, ft_process_group) -> bool:
         fail_rank = envs.VLLM_FT_NCCL_TP_INJECT_FAIL_RANK
@@ -411,28 +437,29 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
         self._ft_active_mask = mask
 
-    def _ensure_ft_nccl_input(self, input_: torch.Tensor, ft_process_group) -> None:
+    def _ensure_ft_nccl_input(
+        self, input_: torch.Tensor, ft_process_group, op: str
+    ) -> None:
+        op_name = "all-gather" if op == "allgather" else "all-reduce"
         if not input_.is_contiguous():
-            raise RuntimeError(
-                "ft_nccl TP all-reduce requires a contiguous input tensor."
-            )
+            raise RuntimeError(f"ft_nccl TP {op_name} requires a contiguous input.")
 
         ft_device = getattr(ft_process_group, "_device", None)
         if ft_device is not None and torch.device(ft_device) != input_.device:
             raise RuntimeError(
-                "ft_nccl TP all-reduce was initialized on "
+                f"ft_nccl TP {op_name} was initialized on "
                 f"{ft_device}, but the input tensor is on {input_.device}."
             )
 
         windows = getattr(ft_process_group, "_windows", {})
         if input_.data_ptr() in windows:
-            self._check_ft_nccl_ar_eligible(input_, ft_process_group)
+            self._check_ft_nccl_eligible(input_, ft_process_group, op)
             return
 
         symmetric_region = get_symmetric_memory_region(input_)
         if symmetric_region is None:
             raise RuntimeError(
-                "ft_nccl TP all-reduce requires inputs to be allocated in "
+                f"ft_nccl TP {op_name} requires inputs to be allocated in "
                 "registered symmetric memory. This tensor is not in vLLM's "
                 "NCCL symmetric-memory pool. "
                 f"shape={tuple(input_.shape)}, dtype={input_.dtype}, "
@@ -450,7 +477,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 pass
             pg_cls = type(ft_process_group)
             raise RuntimeError(
-                "ft_nccl TP all-reduce requires an FTProcessGroup with "
+                f"ft_nccl TP {op_name} requires an FTProcessGroup with "
                 "register_symmetric_tensor(). Imported ft_collective from "
                 f"{ft_collective_path}; process group type is "
                 f"{pg_cls.__module__}.{pg_cls.__qualname__}."
@@ -464,21 +491,27 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 register(input_)
         except TypeError as e:
             raise RuntimeError(
-                "ft_nccl TP all-reduce requires an FTProcessGroup whose "
+                f"ft_nccl TP {op_name} requires an FTProcessGroup whose "
                 "register_symmetric_tensor() supports base_ptr and size_bytes."
             ) from e
-        self._check_ft_nccl_ar_eligible(input_, ft_process_group)
+        self._check_ft_nccl_eligible(input_, ft_process_group, op)
 
-    def _check_ft_nccl_ar_eligible(self, input_: torch.Tensor, ft_process_group) -> None:
-        is_eligible = getattr(ft_process_group, "_is_ft_eligible_ar", None)
+    def _check_ft_nccl_eligible(
+        self, input_: torch.Tensor, ft_process_group, op: str
+    ) -> None:
+        op_name = "all-gather" if op == "allgather" else "all-reduce"
+        is_eligible_name = (
+            "_is_ft_eligible_ag" if op == "allgather" else "_is_ft_eligible_ar"
+        )
+        is_eligible = getattr(ft_process_group, is_eligible_name, None)
         if is_eligible is not None and not is_eligible(input_):
             reason = "unsupported dtype, size, or registration state"
             fallback_reason = getattr(ft_process_group, "_fallback_reason", None)
             if fallback_reason is not None:
-                reason = fallback_reason(input_, "allreduce")
+                reason = fallback_reason(input_, op)
             raise RuntimeError(
-                "ft_nccl TP all-reduce input is not eligible for the FT "
-                f"all-reduce kernel: {reason}."
+                f"ft_nccl TP {op_name} input is not eligible for the FT "
+                f"{op_name} kernel: {reason}."
             )
 
     def all_reduce(self, input_):
@@ -542,6 +575,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
             out = input_.clone()
             torch.distributed.all_reduce(out, group=self.device_group)
         return out
+
+    def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
+        if self._should_use_ft_nccl_tp():
+            return self._ft_nccl_tp_all_gather(input_, dim)
+        return super().all_gather(input_, dim)
 
     def reduce_scatter(self, input_: torch.Tensor, dim: int = -1):
         world_size = self.world_size

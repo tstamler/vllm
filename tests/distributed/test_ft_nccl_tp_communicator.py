@@ -135,6 +135,56 @@ def ft_nccl_tp_communicator_worker(
         assert input_tensor.data_ptr() in ft_process_group._windows
         torch.testing.assert_close(output, expected)
 
+        with nccl_symm_mem_context(pynccl_comm):
+            gather_dim0_input = torch.full(
+                (4, 2),
+                local_rank + 1,
+                dtype=dtype,
+                device=device,
+            )
+
+        if not is_symmetric_memory_tensor(gather_dim0_input):
+            q.put("NCCL symmetric-memory all-gather input is not available.")
+            return
+
+        gather_dim0_output = cuda_communicator.all_gather(gather_dim0_input, dim=0)
+        expected_gather_dim0 = torch.cat(
+            [
+                torch.full_like(gather_dim0_input, rank + 1)
+                for rank in range(world_size)
+            ],
+            dim=0,
+        )
+
+        assert gather_dim0_input.data_ptr() in ft_process_group._windows
+        torch.testing.assert_close(gather_dim0_output, expected_gather_dim0)
+
+        with nccl_symm_mem_context(pynccl_comm):
+            gather_last_dim_input = torch.full(
+                (2, 4),
+                local_rank + 1,
+                dtype=dtype,
+                device=device,
+            )
+
+        if not is_symmetric_memory_tensor(gather_last_dim_input):
+            q.put("NCCL symmetric-memory all-gather input is not available.")
+            return
+
+        gather_last_dim_output = cuda_communicator.all_gather(
+            gather_last_dim_input, dim=-1
+        )
+        expected_gather_last_dim = torch.cat(
+            [
+                torch.full_like(gather_last_dim_input, rank + 1)
+                for rank in range(world_size)
+            ],
+            dim=-1,
+        )
+
+        assert gather_last_dim_input.data_ptr() in ft_process_group._windows
+        torch.testing.assert_close(gather_last_dim_output, expected_gather_last_dim)
+
         vocab_size = world_size * 64
         embedding_dim = 8
         embedding = VocabParallelEmbedding(
