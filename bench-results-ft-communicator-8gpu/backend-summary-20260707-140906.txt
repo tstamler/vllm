@@ -1,0 +1,5 @@
+== ft-nccl ==
+(Worker pid=632340) INFO 07-07 14:09:43 [cuda_communicator.py:245] Using ['FT_NCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker_TP0 pid=632340) WARNING 07-07 14:09:57 [cuda_communicator.py:335] FT NCCL communicator all-reduce fallback for group 'tp:0': numel 20971520 exceeds max_count 16777216.
+(Worker_TP0 pid=632340) WARNING 07-07 14:09:59 [cuda_communicator.py:335] FT NCCL communicator all-gather fallback for group 'tp:0': numel 19464192 exceeds max_count 16777216.
+
