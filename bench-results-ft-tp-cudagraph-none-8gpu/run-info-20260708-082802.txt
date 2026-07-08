@@ -1,0 +1,18 @@
+date=2026-07-08T08:28:02-07:00
+model=Qwen/Qwen2.5-32B-Instruct
+tp=8
+host=127.0.0.1
+port=8000
+dtype=bfloat16
+max_model_len=4096
+max_num_batched_tokens=4096
+gpu_memory_utilization=0.90
+run_id=20260708-082802
+
+04071c1f44003ce0125817c284cad248325e540d
+?? bench-results-ft-tp-cudagraph-none-8gpu/
+
+MODEL=Qwen/Qwen2.5-32B-Instruct
+PYTHONPATH=/workspace/nccl/contrib/fault_tolerant_collectives/ft_handle/python:
+RESULT_DIR=bench-results-ft-tp-cudagraph-none-8gpu
+TP=8
