@@ -91,8 +91,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_torch_group = None
         self._ft_ok_status = None
         self._ft_external_stream = None
-        self._ft_staging_buffers: dict[
-            tuple[tuple[int, ...], torch.dtype, str, int | None], torch.Tensor
+        self._ft_staging_workspaces: dict[
+            tuple[torch.dtype, str, int | None], torch.Tensor
         ] = {}
 
         if use_torch_symm_mem and current_platform.is_cuda():
@@ -124,6 +124,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 # If it's a rocm, 'use_custom_allreduce==True' means it must
                 # currently be an MI300 series.
                 self.qr_comm = QuickAllReduce(group=self.cpu_group, device=self.device)
+
+        if self._should_use_ft_nccl_communicator():
+            self._get_ft_process_group()
 
         if self.world_size > 1:
             self._log_all_reduce_backend_selection()
@@ -340,23 +343,36 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
             return None
 
-        device_index = input_.device.index
-        key = (tuple(input_.shape), input_.dtype, input_.device.type, device_index)
-        staging = self._ft_staging_buffers.get(key)
-        if staging is None:
+        key = (input_.dtype, input_.device.type, input_.device.index)
+        workspace = self._ft_staging_workspaces.get(key)
+        if workspace is None:
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "FT NCCL communicator staging workspace must be initialized "
+                    "before CUDA graph capture. Run one eager collective for "
+                    f"dtype={input_.dtype} on device={input_.device} first."
+                )
+
             ft_process_group = self._get_ft_process_group()
-            staging = ft_process_group.empty(input_.numel(), dtype=input_.dtype).view(
-                input_.shape
-            )
-            if staging.device != input_.device:
+            max_count = getattr(ft_process_group, "_max_count", None)
+            if max_count is None:
+                raise RuntimeError(
+                    "FT NCCL communicator requires FTProcessGroup._max_count "
+                    "to preallocate its staging workspace."
+                )
+            workspace = ft_process_group.empty(max_count, dtype=input_.dtype)
+            if workspace.device != input_.device:
                 raise RuntimeError(
                     "FT NCCL communicator staging buffer was allocated on "
-                    f"{staging.device}, but input is on {input_.device}."
+                    f"{workspace.device}, but input is on {input_.device}."
                 )
-            self._ft_staging_buffers[key] = staging
-        return staging
+            self._ft_staging_workspaces[key] = workspace
+
+        return workspace[: input_.numel()].view(input_.shape)
 
     def _check_ft_nccl_status(self, ft_process_group) -> None:
+        if torch.cuda.is_current_stream_capturing():
+            return
         if hasattr(ft_process_group, "check_and_clear_error"):
             status = ft_process_group.check_and_clear_error()
         else:
@@ -402,8 +418,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         ft_process_group = self._get_ft_process_group()
         self._copy_to_ft_staging(staging, input_, ft_process_group)
-        work = ft_process_group.allreduce([staging])
-        work.wait()
+        assert self._ft_torch_group is not None
+        torch.distributed.all_reduce(staging, group=self._ft_torch_group)
         self._check_ft_nccl_status(ft_process_group)
 
         output = torch.empty_like(input_)
@@ -441,8 +457,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
             output_chunks = output_tensor.unbind(0)
 
-        work = ft_process_group.allgather([list(output_chunks)], [staging])
-        work.wait()
+        assert self._ft_torch_group is not None
+        torch.distributed.all_gather(
+            list(output_chunks), staging, group=self._ft_torch_group
+        )
         self._check_ft_nccl_status(ft_process_group)
 
         if dim == 0:
@@ -621,7 +639,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             raise ValueError("No PyNCCL communicator found")
 
     def destroy(self):
-        self._ft_staging_buffers.clear()
+        self._ft_staging_workspaces.clear()
         self._ft_external_stream = None
         self._ft_process_group = None
         if self._ft_torch_group is not None:
