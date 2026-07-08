@@ -1,0 +1,3 @@
+== torch-nccl ==
+(Worker pid=3229688) INFO 07-08 11:16:06 [cuda_communicator.py:248] Using [] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+
