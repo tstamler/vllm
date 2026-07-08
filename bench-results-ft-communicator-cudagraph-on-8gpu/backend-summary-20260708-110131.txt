@@ -1,0 +1,9 @@
+== custom-tp ==
+(Worker pid=3196388) INFO 07-08 11:02:14 [cuda_communicator.py:248] Using ['CUSTOM', 'PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+
+== torch-nccl ==
+(Worker pid=3204104) INFO 07-08 11:05:02 [cuda_communicator.py:248] Using [] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+
+== ft-nccl ==
+(Worker pid=3212370) INFO 07-08 11:08:09 [cuda_communicator.py:248] Using ['FT_NCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+
