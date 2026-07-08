@@ -411,6 +411,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
         with torch.cuda.stream(ft_stream):
             staging.copy_(input_, non_blocking=True)
 
+    def _wait_for_ft_stream(self, input_: torch.Tensor, ft_process_group) -> None:
+        ft_stream = self._get_ft_external_stream(ft_process_group)
+        if ft_stream is not None:
+            torch.cuda.current_stream(input_.device).wait_stream(ft_stream)
+
     def _ft_nccl_staged_all_reduce(self, input_: torch.Tensor) -> torch.Tensor | None:
         staging = self._get_ft_staging_buffer(input_, "all-reduce")
         if staging is None:
@@ -420,6 +425,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._copy_to_ft_staging(staging, input_, ft_process_group)
         assert self._ft_torch_group is not None
         torch.distributed.all_reduce(staging, group=self._ft_torch_group)
+        self._wait_for_ft_stream(input_, ft_process_group)
         self._check_ft_nccl_status(ft_process_group)
 
         output = torch.empty_like(input_)
@@ -461,6 +467,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         torch.distributed.all_gather(
             list(output_chunks), staging, group=self._ft_torch_group
         )
+        self._wait_for_ft_stream(input_, ft_process_group)
         self._check_ft_nccl_status(ft_process_group)
 
         if dim == 0:
