@@ -32,7 +32,7 @@ from vllm.model_executor.layers.fused_moe.prepare_finalize.ft_nccl_ep import (
     FTNcclEPPrepareAndFinalize,
 )
 from vllm.platforms import current_platform
-from vllm.utils.import_utils import has_deep_ep, has_mori, has_nixl_ep
+from vllm.utils.import_utils import has_deep_ep, has_mori
 
 logger = init_logger(__name__)
 
@@ -45,11 +45,6 @@ if current_platform.is_cuda_alike():
         )
     if has_mori():
         from .prepare_finalize.mori import MoriPrepareAndFinalize
-    if has_nixl_ep():
-        from .prepare_finalize.nixl_ep import (
-            NIXL_EP_QUANT_BLOCK_SHAPE,
-            NixlEPPrepareAndFinalize,
-        )
 
 
 def _get_ep_all2all_manager(eep_stage: bool = False) -> Any:
@@ -98,6 +93,8 @@ def maybe_roundup_layer_hidden_size(
         )
 
     if moe_parallel_config.use_nixl_ep_kernels:
+        from .prepare_finalize.nixl_ep import NixlEPPrepareAndFinalize
+
         hidden_size = NixlEPPrepareAndFinalize.maybe_roundup_layer_hidden_size(
             hidden_size
         )
@@ -309,6 +306,11 @@ def maybe_make_prepare_finalize(
         )
 
     elif moe.use_nixl_ep_kernels:
+        from .prepare_finalize.nixl_ep import (
+            NIXL_EP_QUANT_BLOCK_SHAPE,
+            NixlEPPrepareAndFinalize,
+        )
+
         assert quant_config is not None
         global_to_physical = physical_to_global = local_expert_global_ids = None
         if routing_tables is not None:
