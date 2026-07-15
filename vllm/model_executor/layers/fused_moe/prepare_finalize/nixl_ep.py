@@ -152,7 +152,13 @@ class NixlEPPrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
         all2all_manager.commit_staged_state()
 
     def topk_indices_dtype(self) -> torch.dtype | None:
-        return torch.int64
+        topk_indices_dtype = getattr(nixl_ep, "topk_idx_t", torch.int64)
+        if topk_indices_dtype not in (torch.int32, torch.int64):
+            raise RuntimeError(
+                "NIXL EP reported an unsupported top-k index dtype: "
+                f"{topk_indices_dtype!r}. Expected torch.int32 or torch.int64."
+            )
+        return topk_indices_dtype
 
     def _map_global_to_physical_ids(self, topk_ids: torch.Tensor) -> torch.Tensor:
         if self.global_to_physical is None:
