@@ -11,7 +11,11 @@ source "$SCRIPT_DIR/common.sh"
 require_vllm_python
 ALL2ALL_BACKEND=nixl_ep
 build_engine_args
-ENGINE_ARGS+=(--enable-elastic-ep --enable-eplb)
+ENGINE_ARGS+=(
+  --data-parallel-backend ray
+  --enable-elastic-ep
+  --enable-eplb
+)
 
 export VLLM_USE_FT_NCCL_COMMUNICATOR=0
 export VLLM_USE_FT_NCCL_EP=0
