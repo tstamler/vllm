@@ -28,6 +28,9 @@ from vllm.model_executor.layers.fused_moe.prepare_finalize.flashinfer_nvlink_one
 from vllm.model_executor.layers.fused_moe.prepare_finalize.flashinfer_nvlink_two_sided import (  # noqa: E501
     FlashInferNVLinkTwoSidedPrepareAndFinalize,
 )
+from vllm.model_executor.layers.fused_moe.prepare_finalize.ft_nccl_ep import (
+    FTNcclEPPrepareAndFinalize,
+)
 from vllm.platforms import current_platform
 from vllm.utils.import_utils import has_deep_ep, has_mori, has_nixl_ep
 
@@ -271,6 +274,31 @@ def maybe_make_prepare_finalize(
             num_dispatchers=all2all_manager.world_size,
             dispatch_dtype_bytes_per_elem=dispatch_dtype_bytes_per_elem,
             dispatch_scale_bytes_per_token=dispatch_scale_bytes_per_token,
+        )
+
+    elif moe.moe_parallel_config.use_ft_nccl_ep_kernels:
+        if eep_stage:
+            raise NotImplementedError("ft_nccl_ep does not support elastic EP yet")
+        if use_monolithic:
+            raise NotImplementedError("ft_nccl_ep requires modular MoE kernels")
+        if routing_tables is not None:
+            raise NotImplementedError(
+                "ft_nccl_ep currently supports only linear expert placement"
+            )
+        if moe.is_lora_enabled:
+            raise NotImplementedError("ft_nccl_ep does not support MoE LoRA yet")
+        all_to_all_args = dict(
+            max_num_tokens_per_rank=moe.max_num_tokens,
+            token_hidden_size=moe.hidden_dim,
+            num_global_experts=moe.num_experts,
+            num_experts_per_token=moe.experts_per_token,
+            input_dtype=moe.in_dtype,
+            topk_weights_dtype=torch.float32,
+        )
+        handle = all2all_manager.get_handle(all_to_all_args)
+        prepare_finalize = FTNcclEPPrepareAndFinalize(
+            handle,
+            num_dispatchers=all2all_manager.world_size,
         )
 
     elif moe.use_ag_rs_all2all_kernels and allow_new_interface:

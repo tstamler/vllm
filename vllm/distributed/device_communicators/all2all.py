@@ -332,6 +332,39 @@ class _NixlEPBufferState:
     active_ep_size: int
 
 
+class FTNcclEPAll2AllManager(All2AllManagerBase):
+    """Own FT NCCL workspaces used by the routed EP prepare/finalize path."""
+
+    def __init__(self, cpu_group, ft_process_group, tcp_store_group=None):
+        super().__init__(cpu_group, tcp_store_group)
+        if self.internode:
+            raise ValueError("ft_nccl_ep currently supports only single-node EP")
+        if not hasattr(ft_process_group, "all_to_allv_multi"):
+            raise RuntimeError(
+                "ft_nccl_ep requires an FTProcessGroup with all_to_allv_multi() support"
+            )
+        self.ft_process_group = ft_process_group
+        self._cache = Cache()
+
+    def get_handle(self, kwargs):
+        def create_handle(**handle_args):
+            from vllm.model_executor.layers.fused_moe.prepare_finalize.ft_nccl_ep import (  # noqa: E501
+                FTNcclEPHandle,
+            )
+
+            return FTNcclEPHandle(
+                ft_process_group=self.ft_process_group,
+                ep_rank=self.rank,
+                ep_size=self.world_size,
+                **handle_args,
+            )
+
+        return self._cache.get_or_create(kwargs, create_handle)
+
+    def max_sms_used(self) -> int | None:
+        return None
+
+
 class NixlEPAll2AllManager(All2AllManagerBase):
     """
     All2All communication based on NIXL EP kernels.

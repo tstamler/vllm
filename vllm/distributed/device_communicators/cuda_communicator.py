@@ -26,6 +26,10 @@ logger = init_logger(__name__)
 _FT_NCCL_DTYPES = frozenset({torch.float32, torch.float16, torch.bfloat16})
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "0").lower() in ("1", "true", "yes", "on")
+
+
 class CudaCommunicator(DeviceCommunicatorBase):
     def __init__(
         self,
@@ -125,8 +129,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 # currently be an MI300 series.
                 self.qr_comm = QuickAllReduce(group=self.cpu_group, device=self.device)
 
-        if self._should_use_ft_nccl_communicator():
+        if self._should_init_ft_nccl_communicator():
             self._get_ft_process_group()
+            if self._should_use_ft_nccl_ep_communicator():
+                logger.info_once(
+                    "Using FT NCCL staged all_gatherv/reduce_scatterv for group '%s'.",
+                    self.unique_name or "<unnamed>",
+                    scope="global",
+                )
 
         if self.world_size > 1:
             self._log_all_reduce_backend_selection()
@@ -159,6 +169,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
                 self.all2all_manager = NixlEPAll2AllManager(
                     self.cpu_group, tcp_store_group
+                )
+            elif self.all2all_backend == "ft_nccl_ep":
+                from .all2all import FTNcclEPAll2AllManager
+
+                self.all2all_manager = FTNcclEPAll2AllManager(
+                    self.cpu_group,
+                    self._get_ft_process_group(),
+                    tcp_store_group,
                 )
             elif (
                 self.all2all_backend == "flashinfer_all2allv"
@@ -255,17 +273,41 @@ class CudaCommunicator(DeviceCommunicatorBase):
         )
 
     def _should_use_ft_nccl_communicator(self) -> bool:
-        enabled = os.getenv("VLLM_USE_FT_NCCL_COMMUNICATOR", "0").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        return self._should_use_ft_nccl_tp_communicator()
+
+    def _ft_group_kind(self) -> str:
+        return self.unique_name.split(":", 1)[0] if self.unique_name else ""
+
+    def _should_use_ft_nccl_tp_communicator(self) -> bool:
+        enabled = _env_flag("VLLM_USE_FT_NCCL_COMMUNICATOR")
         return (
             enabled
-            and self.unique_name.split(":")[0] == "tp"
+            and self._ft_group_kind() == "tp"
             and self.world_size > 1
             and current_platform.is_cuda()
+        )
+
+    def _should_use_ft_nccl_ep_communicator(self) -> bool:
+        return (
+            _env_flag("VLLM_USE_FT_NCCL_EP")
+            and self._ft_group_kind() in ("dp", "ep")
+            and self.world_size > 1
+            and current_platform.is_cuda()
+        )
+
+    def _should_use_ft_nccl_ep_backend(self) -> bool:
+        return (
+            self.all2all_backend == "ft_nccl_ep"
+            and self._ft_group_kind() == "ep"
+            and self.world_size > 1
+            and current_platform.is_cuda()
+        )
+
+    def _should_init_ft_nccl_communicator(self) -> bool:
+        return (
+            self._should_use_ft_nccl_tp_communicator()
+            or self._should_use_ft_nccl_ep_communicator()
+            or self._should_use_ft_nccl_ep_backend()
         )
 
     def _get_ft_process_group(self):
@@ -315,25 +357,72 @@ class CudaCommunicator(DeviceCommunicatorBase):
         return ft_process_group
 
     def _ft_fallback_reason(self, input_: torch.Tensor, op: str) -> str | None:
-        if input_.dtype not in _FT_NCCL_DTYPES:
-            return f"dtype {input_.dtype} is not supported by FT NCCL {op}"
-        if not input_.is_cuda:
+        return self._ft_staging_fallback_reason(
+            input_.dtype,
+            input_.device,
+            input_.numel(),
+            input_.element_size(),
+            op,
+        )
+
+    def _ft_staging_fallback_reason(
+        self,
+        dtype: torch.dtype,
+        device: torch.device,
+        numel: int,
+        element_size: int,
+        op: str,
+    ) -> str | None:
+        if dtype not in _FT_NCCL_DTYPES:
+            return f"dtype {dtype} is not supported by FT NCCL {op}"
+        if device.type != "cuda":
             return "input is not on CUDA"
-        if input_.numel() == 0:
+        if numel == 0:
             return "zero-sized input is not supported by FT NCCL staging"
-        if op == "all-gather" and input_.numel() * input_.element_size() % 4 != 0:
+        if op == "all-gather" and numel * element_size % 4 != 0:
             return "all-gather input byte size is not divisible by 4"
 
         ft_process_group = self._get_ft_process_group()
         max_count = getattr(ft_process_group, "_max_count", None)
-        if max_count is not None and input_.numel() > max_count:
-            return f"numel {input_.numel()} exceeds max_count {max_count}"
+        if max_count is not None and numel > max_count:
+            return f"numel {numel} exceeds max_count {max_count}"
         return None
 
     def _get_ft_staging_buffer(
         self, input_: torch.Tensor, op: str
     ) -> torch.Tensor | None:
-        reason = self._ft_fallback_reason(input_, op)
+        return self._get_ft_staging_view(
+            input_.shape,
+            input_.dtype,
+            input_.device,
+            op,
+            input_,
+        )
+
+    def _get_ft_staging_view(
+        self,
+        shape: torch.Size | tuple[int, ...],
+        dtype: torch.dtype,
+        device: torch.device,
+        op: str,
+        input_: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        if input_ is not None:
+            input_numel = input_.numel()
+            reason = self._ft_fallback_reason(input_, op)
+        else:
+            input_numel = 1
+            for dim in shape:
+                input_numel *= dim
+            element_size = 4 if dtype == torch.float32 else 2
+            reason = self._ft_staging_fallback_reason(
+                dtype,
+                device,
+                input_numel,
+                element_size,
+                op,
+            )
+
         if reason is not None:
             logger.warning_once(
                 "FT NCCL communicator %s fallback for group '%s': %s.",
@@ -343,14 +432,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
             return None
 
-        key = (input_.dtype, input_.device.type, input_.device.index)
+        key = (dtype, device.type, device.index)
         workspace = self._ft_staging_workspaces.get(key)
         if workspace is None:
             if torch.cuda.is_current_stream_capturing():
                 raise RuntimeError(
                     "FT NCCL communicator staging workspace must be initialized "
                     "before CUDA graph capture. Run one eager collective for "
-                    f"dtype={input_.dtype} on device={input_.device} first."
+                    f"dtype={dtype} on device={device} first."
                 )
 
             ft_process_group = self._get_ft_process_group()
@@ -360,15 +449,15 @@ class CudaCommunicator(DeviceCommunicatorBase):
                     "FT NCCL communicator requires FTProcessGroup._max_count "
                     "to preallocate its staging workspace."
                 )
-            workspace = ft_process_group.empty(max_count, dtype=input_.dtype)
-            if workspace.device != input_.device:
+            workspace = ft_process_group.empty(max_count, dtype=dtype)
+            if workspace.device != device:
                 raise RuntimeError(
                     "FT NCCL communicator staging buffer was allocated on "
-                    f"{workspace.device}, but input is on {input_.device}."
+                    f"{workspace.device}, but input is on {device}."
                 )
             self._ft_staging_workspaces[key] = workspace
 
-        return workspace[: input_.numel()].view(input_.shape)
+        return workspace[:input_numel].view(shape)
 
     def _check_ft_nccl_status(self, ft_process_group) -> None:
         if torch.cuda.is_current_stream_capturing():
@@ -441,16 +530,22 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         ft_process_group = self._get_ft_process_group()
         self._copy_to_ft_staging(staging, input_, ft_process_group)
+        return self._ft_nccl_all_gather_from_staging(staging, dim)
+
+    def _ft_nccl_all_gather_from_staging(
+        self, staging: torch.Tensor, dim: int = -1
+    ) -> torch.Tensor:
+        ft_process_group = self._get_ft_process_group()
 
         if dim < 0:
-            dim += input_.dim()
-        input_size = input_.size()
+            dim += staging.dim()
+        input_size = staging.size()
 
         if dim == 0:
             output_tensor = torch.empty(
                 (self.world_size * input_size[0],) + input_size[1:],
-                dtype=input_.dtype,
-                device=input_.device,
+                dtype=staging.dtype,
+                device=staging.device,
             )
             output_chunks = output_tensor.reshape(
                 (self.world_size,) + input_size
@@ -458,8 +553,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
         else:
             output_tensor = torch.empty(
                 (self.world_size,) + input_size,
-                dtype=input_.dtype,
-                device=input_.device,
+                dtype=staging.dtype,
+                device=staging.device,
             )
             output_chunks = output_tensor.unbind(0)
 
@@ -467,15 +562,86 @@ class CudaCommunicator(DeviceCommunicatorBase):
         torch.distributed.all_gather(
             list(output_chunks), staging, group=self._ft_torch_group
         )
-        self._wait_for_ft_stream(input_, ft_process_group)
+        self._wait_for_ft_stream(staging, ft_process_group)
         self._check_ft_nccl_status(ft_process_group)
 
         if dim == 0:
             return output_tensor
         return torch.cat(list(output_chunks), dim=dim)
 
+    def _ft_nccl_staged_all_gatherv(
+        self,
+        input_: torch.Tensor,
+        dim: int = 0,
+        sizes: list[int] | None = None,
+    ) -> torch.Tensor | None:
+        if dim != 0:
+            return None
+        if sizes is None:
+            return self._ft_nccl_staged_all_gather(input_, dim=0)
+
+        assert len(sizes) == self.world_size
+        assert input_.shape[0] == sizes[self.rank_in_group], (
+            f"{input_.shape[0]} != {sizes[self.rank_in_group]}"
+        )
+
+        max_size = max(sizes)
+        output_shape = (sum(sizes),) + input_.shape[1:]
+        if max_size == 0:
+            return torch.empty(output_shape, dtype=input_.dtype, device=input_.device)
+
+        padded_shape = (max_size,) + input_.shape[1:]
+        staging = self._get_ft_staging_view(
+            padded_shape,
+            input_.dtype,
+            input_.device,
+            "all-gather",
+        )
+        if staging is None:
+            return None
+
+        ft_process_group = self._get_ft_process_group()
+        local_size = input_.shape[0]
+        if local_size > 0:
+            self._copy_to_ft_staging(
+                staging.narrow(0, 0, local_size),
+                input_,
+                ft_process_group,
+            )
+
+        padded_output = self._ft_nccl_all_gather_from_staging(staging, dim=0)
+        padded_chunks = padded_output.view((self.world_size,) + padded_shape)
+        chunks = [
+            padded_chunks[rank].narrow(0, 0, size) for rank, size in enumerate(sizes)
+        ]
+        return torch.cat(chunks, dim=0)
+
+    def _ft_nccl_staged_reduce_scatterv(
+        self, input_: torch.Tensor, dim: int = -1, sizes: list[int] | None = None
+    ) -> torch.Tensor | None:
+        if dim < 0:
+            dim += input_.dim()
+
+        input_tensor = input_.movedim(0, dim).contiguous()
+
+        if sizes is not None:
+            assert len(sizes) == self.world_size, f"{len(sizes)} == {self.world_size}"
+            assert input_tensor.shape[0] == sum(sizes)
+            chunk_size = sizes[self.rank_in_group]
+            chunk_offset = sum(sizes[: self.rank_in_group])
+        else:
+            assert input_tensor.shape[0] % self.world_size == 0
+            chunk_size = input_tensor.shape[0] // self.world_size
+            chunk_offset = self.rank_in_group * chunk_size
+
+        reduced = self._ft_nccl_staged_all_reduce(input_tensor)
+        if reduced is None:
+            return None
+        output = reduced.narrow(0, chunk_offset, chunk_size)
+        return output.movedim(0, dim).contiguous()
+
     def all_reduce(self, input_):
-        if self._should_use_ft_nccl_communicator():
+        if self._should_use_ft_nccl_tp_communicator():
             out = self._ft_nccl_staged_all_reduce(input_)
             if out is not None:
                 return out
@@ -539,7 +705,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         return out
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
-        if self._should_use_ft_nccl_communicator():
+        if self._should_use_ft_nccl_tp_communicator():
             out = self._ft_nccl_staged_all_gather(input_, dim)
             if out is not None:
                 return out
@@ -573,6 +739,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def reduce_scatterv(
         self, input_: torch.Tensor, dim: int = -1, sizes: list[int] | None = None
     ):
+        if self._should_use_ft_nccl_ep_communicator():
+            out = self._ft_nccl_staged_reduce_scatterv(input_, dim, sizes)
+            if out is not None:
+                return out
+
         world_size = self.world_size
         pynccl_comm = self.pynccl_comm
         assert pynccl_comm is not None
@@ -677,7 +848,6 @@ class CudaCommunicator(DeviceCommunicatorBase):
             raise NotImplementedError("only dim 0 all-gatherv is supported")
         world_size = self.world_size
         pynccl_comm = self.pynccl_comm
-        assert pynccl_comm is not None and not pynccl_comm.disabled
 
         # 'sizes' is not needed if all inputs in the same group have the same
         # shape
@@ -685,6 +855,16 @@ class CudaCommunicator(DeviceCommunicatorBase):
             sizes = None
 
         def _all_gather_single(input_: torch.Tensor, sizes: list[int] | None = None):
+            if self._should_use_ft_nccl_ep_communicator():
+                out = self._ft_nccl_staged_all_gatherv(input_, dim, sizes)
+                if out is not None:
+                    return out
+
+            if pynccl_comm is None or pynccl_comm.disabled:
+                raise ValueError(
+                    "No PyNCCL communicator found for all-gatherv fallback."
+                )
+
             input_size = input_.size()
             if sizes is not None:
                 assert len(sizes) == world_size
@@ -707,6 +887,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if isinstance(input_, torch.Tensor):
             return _all_gather_single(input_, sizes)
 
+        if self._should_use_ft_nccl_ep_communicator():
+            return [_all_gather_single(inp, sizes=sizes) for inp in input_]
+
+        assert pynccl_comm is not None and not pynccl_comm.disabled
         output_list = []
         pynccl_comm.group_start()
         for inp in input_:

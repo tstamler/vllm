@@ -1075,6 +1075,10 @@ class FusedMoEParallelConfig:
         )
 
     @property
+    def use_ft_nccl_ep_kernels(self):
+        return self.use_all2all_kernels and self.all2all_backend == "ft_nccl_ep"
+
+    @property
     def use_mori_kernels(self):
         return self.use_all2all_kernels and self.all2all_backend == "mori"
 
