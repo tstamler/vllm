@@ -1,0 +1,22 @@
+== nixl-ep ==
+(APIServer pid=623150) [36m(RayWorkerProc pid=639287)[0m (Worker pid=639287) INFO 07-15 14:56:01 [cuda_communicator.py:203] Using NixlEPAll2AllManager all2all manager.
+
+== ft-ag-rs ==
+(Worker pid=664550) INFO 07-15 15:05:30 [cuda_communicator.py:203] Using AgRsAll2AllManager all2all manager.
+(Worker pid=664550) INFO 07-15 15:05:25 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'dp:0'.
+(Worker pid=664550) INFO 07-15 15:05:30 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'ep:0'.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:05:41 [cuda_communicator.py:427] FT NCCL communicator all-gather fallback for group 'dp:0': dtype torch.int32 is not supported by FT NCCL all-gather.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:05:41 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 67108864 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:06:38 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 47771648 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:07:07 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 40058880 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:07:56 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 23726080 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:07:59 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 33589248 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:06 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 61483008 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:06 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 19161088 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:13 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 33486848 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:14 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 21352448 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:14 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 54679552 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:14 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 58923008 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:20 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 62613504 exceeds max_count 16777216.
+(Worker_DP0_EP0 pid=664550) WARNING 07-15 15:08:21 [cuda_communicator.py:427] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 25399296 exceeds max_count 16777216.
+
