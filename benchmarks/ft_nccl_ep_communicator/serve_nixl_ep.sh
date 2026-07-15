@@ -11,11 +11,13 @@ source "$SCRIPT_DIR/common.sh"
 require_vllm_python
 ALL2ALL_BACKEND=nixl_ep
 build_engine_args
+ENGINE_ARGS+=(--enable-elastic-ep --enable-eplb)
 
 export VLLM_USE_FT_NCCL_COMMUNICATOR=0
 export VLLM_USE_FT_NCCL_EP=0
 export VLLM_USE_FT_NCCL_TP=0
 export VLLM_DISABLE_PYNCCL=0
+export VLLM_NIXL_EP_MAX_NUM_RANKS="${VLLM_NIXL_EP_MAX_NUM_RANKS:-$DP}"
 export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-1}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-1}"
 

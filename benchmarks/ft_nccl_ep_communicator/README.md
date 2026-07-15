@@ -10,6 +10,8 @@ Default model and layout:
 - `DP=8`
 - EP enabled via `--enable-expert-parallel`
 - EP backends: `allgather_reducescatter`, `nixl_ep`, and `ft_nccl_ep`
+- The NIXL EP configuration enables elastic EP and EPLB, as required by its
+  TCPStore-based rank-management interface.
 
 Run both configs:
 
