@@ -60,14 +60,14 @@ class FTNcclEPHandle:
         max_send_rows = ep_size * max_num_tokens_per_rank
         max_recv_rows = ep_size * max_num_tokens_per_rank
         self.send_hidden = self.pg.empty(
-            max_send_rows, token_hidden_size, dtype=input_dtype
-        )
+            max_send_rows * token_hidden_size, dtype=input_dtype
+        ).view(max_send_rows, token_hidden_size)
         self.send_ids = self.pg.empty(
-            max_send_rows, num_experts_per_token, dtype=torch.int64
-        )
+            max_send_rows * num_experts_per_token, dtype=torch.int64
+        ).view(max_send_rows, num_experts_per_token)
         self.send_weights = self.pg.empty(
-            max_send_rows, num_experts_per_token, dtype=topk_weights_dtype
-        )
+            max_send_rows * num_experts_per_token, dtype=topk_weights_dtype
+        ).view(max_send_rows, num_experts_per_token)
         self.recv_hidden_slots = torch.empty(
             max_recv_rows,
             token_hidden_size,
@@ -100,8 +100,8 @@ class FTNcclEPHandle:
         )
 
         self.combine_send = self.pg.empty(
-            max_recv_rows, token_hidden_size, dtype=input_dtype
-        )
+            max_recv_rows * token_hidden_size, dtype=input_dtype
+        ).view(max_recv_rows, token_hidden_size)
         self.combine_recv_slots = torch.empty_like(self.recv_hidden_slots)
         self.combine_workspace = self.pg.create_a2av_multi_workspace(
             [token_hidden_size * input_dtype.itemsize], max_num_tokens_per_rank
