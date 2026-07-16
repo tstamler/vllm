@@ -283,6 +283,7 @@ class FTNcclEPHandle:
         self.num_experts = num_global_experts
         self.top_k = num_experts_per_token
         self.experts_per_rank = num_global_experts // ep_size
+        self.padding_expert = ep_rank * self.experts_per_rank
         self.input_dtype = input_dtype
         self.weights_dtype = topk_weights_dtype
 
@@ -407,7 +408,7 @@ class FTNcclEPHandle:
         for source in range(self.ep_size):
             slot = source * self.max_tokens
             slot_end = slot + num_tokens
-            self.recv_ids_slots[slot:slot_end].fill_(-1)
+            self.recv_ids_slots[slot:slot_end].fill_(self.padding_expert)
             self.recv_weights_slots[slot:slot_end].zero_()
 
         work, device_recv_counts = self.pg.all_to_allv_multi(
@@ -424,8 +425,9 @@ class FTNcclEPHandle:
         work.wait()
         self._check_status("dispatch")
 
-        # Keep the routed shape fixed for a captured input shape. Invalid rows
-        # retain expert id -1 and zero weight, so standard MoE kernels skip them.
+        # Keep the routed shape fixed for a captured input shape. Padding rows
+        # use a valid local expert ID because the standard Triton MoE assignment
+        # indexes expert_map before filtering. Zero weights make them inert.
         recv_rows = self.ep_size * num_tokens
         for source in range(self.ep_size):
             output_start = source * num_tokens
