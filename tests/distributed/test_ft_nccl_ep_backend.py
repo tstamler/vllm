@@ -84,9 +84,10 @@ def _worker(
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
                 run_round_trip()
-            hidden.add_(1)
-            graph.replay()
-            torch.cuda.synchronize(device)
+            for _ in range(8):
+                hidden.add_(1)
+                graph.replay()
+                torch.cuda.synchronize(device)
         else:
             run_round_trip()
 

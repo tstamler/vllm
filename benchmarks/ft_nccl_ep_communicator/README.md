@@ -36,7 +36,7 @@ Run both configs:
 export FT_COLLECTIVE_PYTHON=/workspace/nccl/contrib/fault_tolerant_collectives/ft_handle/python
 export PYTHONPATH="$FT_COLLECTIVE_PYTHON:${PYTHONPATH:-}"
 
-FT_NCCL_MAX_COUNT=33554432 \
+FT_NCCL_MAX_COUNT=134217728 \
 RESULT_DIR=bench-results-ft-communicator-ep-8gpu \
 benchmarks/ft_nccl_ep_communicator/run_all.sh
 ```
@@ -44,7 +44,7 @@ benchmarks/ft_nccl_ep_communicator/run_all.sh
 Run only the routed FT NCCL backend:
 
 ```bash
-FT_NCCL_MAX_COUNT=33554432 \
+FT_NCCL_MAX_COUNT=134217728 \
 RESULT_DIR=bench-results-ft-communicator-ep-8gpu \
 benchmarks/ft_nccl_ep_communicator/run_all.sh ft-a2av
 ```

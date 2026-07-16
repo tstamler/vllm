@@ -25,6 +25,12 @@ class _FTNcclEPRoute:
 
 
 @triton.jit
+def _ft_nccl_ep_reset_counts_kernel(send_counts_ptr, ep_size: tl.constexpr):
+    destination = tl.program_id(0)
+    tl.store(send_counts_ptr + destination, 0, mask=destination < ep_size)
+
+
+@triton.jit
 def _ft_nccl_ep_route_kernel(
     topk_ids_ptr,
     send_counts_ptr,
@@ -68,7 +74,7 @@ def _ft_nccl_ep_pack_kernel(
     destination = tl.program_id(1)
     block = tl.program_id(2)
     position = tl.load(positions_ptr + token * ep_size + destination)
-    selected = position >= 0
+    selected = (position >= 0) & (position < capacity)
     destination_row = destination * capacity + position
 
     hidden_offsets = block * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -121,7 +127,7 @@ def _ft_nccl_ep_combine_kernel(
     result = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
     for source in tl.static_range(ep_size):
         position = tl.load(positions_ptr + token * ep_size + source)
-        selected = position >= 0
+        selected = (position >= 0) & (position < capacity)
         source_row = source * capacity + position
         contribution = tl.load(
             recv_ptr + source_row * hidden_size + offsets,
@@ -147,8 +153,10 @@ def _ft_nccl_ep_pack(
 ) -> None:
     num_tokens, hidden_size = hidden_states.shape
     top_k = topk_ids.shape[1]
-    send_counts.zero_()
-    positions.fill_(-1)
+    _ft_nccl_ep_reset_counts_kernel[(ep_size,)](
+        send_counts,
+        ep_size=ep_size,
+    )
     _ft_nccl_ep_route_kernel[(num_tokens, ep_size)](
         topk_ids,
         send_counts,
@@ -367,14 +375,20 @@ class FTNcclEPHandle:
             raise ValueError("ft_nccl_ep hidden-state shape changed after setup")
         if hidden_states.dtype != self.input_dtype:
             raise ValueError("ft_nccl_ep hidden-state dtype changed after setup")
+        if not hidden_states.is_contiguous():
+            raise ValueError("ft_nccl_ep requires contiguous hidden states")
         expected_topk_shape = (num_tokens, self.top_k)
         if topk_ids.shape != expected_topk_shape or topk_ids.dtype != torch.int64:
             raise ValueError(f"ft_nccl_ep requires int64 topk_ids{expected_topk_shape}")
+        if not topk_ids.is_contiguous():
+            raise ValueError("ft_nccl_ep requires contiguous top-k IDs")
         if (
             topk_weights.shape != expected_topk_shape
             or topk_weights.dtype != self.weights_dtype
         ):
             raise ValueError("ft_nccl_ep top-k weight shape or dtype changed")
+        if not topk_weights.is_contiguous():
+            raise ValueError("ft_nccl_ep requires contiguous top-k weights")
 
         positions = self.route_positions[:num_tokens]
         torch.ops.vllm.ft_nccl_ep_pack(
