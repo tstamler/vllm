@@ -1,0 +1,10 @@
+== ft-ag-rs ==
+(Worker pid=3480114) INFO 07-16 12:28:23 [cuda_communicator.py:203] Using AgRsAll2AllManager all2all manager.
+(Worker pid=3480114) INFO 07-16 12:28:18 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'dp:0'.
+(Worker pid=3480114) INFO 07-16 12:28:23 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'ep:0'.
+(Worker_DP0_EP0 pid=3480114) WARNING 07-16 12:28:50 [cuda_communicator.py:427] FT NCCL communicator all-gather fallback for group 'dp:0': dtype torch.int32 is not supported by FT NCCL all-gather.
+
+== ft-a2av ==
+(Worker pid=3499452) INFO 07-16 12:32:49 [cuda_communicator.py:203] Using FTNcclEPAll2AllManager all2all manager.
+Starting routed FT NCCL A2AV EP server: model=deepseek-ai/DeepSeek-V2-Lite-Chat tp=1 dp=8
+
