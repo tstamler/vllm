@@ -5,14 +5,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
+export ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
 require_vllm_python
 ALL2ALL_BACKEND=ft_nccl_ep
-# The initial PoC uses dynamic PyTorch routing and host-visible receive counts.
-# Keep eager as the default until these steps are replaced by graph-safe kernels.
 build_engine_args
 
 if [[ -d "$FT_COLLECTIVE_PYTHON" ]]; then

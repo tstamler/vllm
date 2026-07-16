@@ -16,7 +16,13 @@ from vllm.platforms import current_platform
 from vllm.utils.network_utils import get_open_port
 
 
-def _worker(local_rank: int, world_size: int, master_port: int, q: mp.Queue) -> None:
+def _worker(
+    local_rank: int,
+    world_size: int,
+    master_port: int,
+    use_cuda_graph: bool,
+    q: mp.Queue,
+) -> None:
     try:
         from ft_collective import get_ft_process_group
     except ImportError:
@@ -63,17 +69,34 @@ def _worker(local_rank: int, world_size: int, master_port: int, q: mp.Queue) -> 
         )
         topk_weights = torch.full((3, 2), 0.5, dtype=torch.float32, device=device)
 
-        recv_hidden, _, _, route = handle.dispatch(hidden, topk_ids, topk_weights)
-        # Rank-dependent local work lets the reverse exchange identify which
-        # destination produced every contribution.
-        local_contributions = recv_hidden * (local_rank + 1)
         output = torch.empty_like(hidden)
-        handle.combine(local_contributions, route, output)
+
+        def run_round_trip() -> None:
+            recv_hidden, _, _, route = handle.dispatch(hidden, topk_ids, topk_weights)
+            # Rank-dependent local work lets the reverse exchange identify
+            # which destination produced every contribution.
+            local_contributions = recv_hidden * (local_rank + 1)
+            handle.combine(local_contributions, route, output)
+
+        if use_cuda_graph:
+            run_round_trip()
+            torch.cuda.synchronize(device)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                run_round_trip()
+            hidden.add_(1)
+            graph.replay()
+            torch.cuda.synchronize(device)
+        else:
+            run_round_trip()
 
         expected = hidden.clone()
         expected[1].mul_(2)
         expected[2].mul_(3)
         torch.testing.assert_close(output, expected)
+        if use_cuda_graph:
+            del graph
+            torch.cuda.synchronize(device)
     finally:
         if ft_group is not None:
             dist.destroy_process_group(ft_group)
@@ -82,7 +105,8 @@ def _worker(local_rank: int, world_size: int, master_port: int, q: mp.Queue) -> 
 
 @pytest.mark.skipif(not current_platform.is_cuda(), reason="ft_nccl_ep requires CUDA")
 @pytest.mark.skipif(envs.VLLM_TARGET_DEVICE != "cuda", reason="Only test on CUDA")
-def test_ft_nccl_ep_backend_round_trip() -> None:
+@pytest.mark.parametrize("use_cuda_graph", [False, True], ids=["eager", "cuda_graph"])
+def test_ft_nccl_ep_backend_round_trip(use_cuda_graph: bool) -> None:
     world_size = 2
     if torch.cuda.device_count() < world_size:
         pytest.skip("Not enough GPUs")
@@ -90,7 +114,7 @@ def test_ft_nccl_ep_backend_round_trip() -> None:
     q = mp.get_context("spawn").Queue()
     mp.spawn(
         _worker,
-        args=(world_size, get_open_port(), q),
+        args=(world_size, get_open_port(), use_cuda_graph, q),
         nprocs=world_size,
         join=True,
     )

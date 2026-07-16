@@ -47,6 +47,11 @@ write_run_info() {
     echo "max_model_len=$MAX_MODEL_LEN"
     echo "max_num_batched_tokens=$MAX_NUM_BATCHED_TOKENS"
     echo "gpu_memory_utilization=$GPU_MEMORY_UTILIZATION"
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+      echo "huggingface_auth_configured=true"
+    else
+      echo "huggingface_auth_configured=false"
+    fi
     echo "run_id=$RUN_ID"
     echo
     git -C "$VLLM_ROOT" rev-parse HEAD 2>/dev/null || true

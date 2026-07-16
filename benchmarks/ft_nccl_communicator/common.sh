@@ -24,6 +24,25 @@ RESULT_DIR="${RESULT_DIR:-$VLLM_ROOT/bench-results-ft-communicator-${TP}gpu}"
 READY_CHECK_TIMEOUT_SEC="${READY_CHECK_TIMEOUT_SEC:-1800}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 BENCH_EXTRA_ARGS="${BENCH_EXTRA_ARGS:-}"
+HF_TOKEN_FILE="${HF_TOKEN_FILE:-}"
+
+if [[ -z "${HF_TOKEN:-}" && -n "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
+  HF_TOKEN="$HUGGING_FACE_HUB_TOKEN"
+fi
+if [[ -z "${HF_TOKEN:-}" && -n "$HF_TOKEN_FILE" ]]; then
+  if [[ ! -r "$HF_TOKEN_FILE" ]]; then
+    echo "HF_TOKEN_FILE is not readable: $HF_TOKEN_FILE" >&2
+    exit 1
+  fi
+  IFS= read -r HF_TOKEN <"$HF_TOKEN_FILE" || true
+  if [[ -z "$HF_TOKEN" ]]; then
+    echo "HF_TOKEN_FILE is empty: $HF_TOKEN_FILE" >&2
+    exit 1
+  fi
+fi
+if [[ -n "${HF_TOKEN:-}" ]]; then
+  export HF_TOKEN
+fi
 
 DEFAULT_FT_COLLECTIVE_PYTHON="/workspace/nccl/contrib/fault_tolerant_collectives"
 DEFAULT_FT_COLLECTIVE_PYTHON+="/ft_handle/python"

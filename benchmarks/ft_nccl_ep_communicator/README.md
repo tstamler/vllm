@@ -14,6 +14,22 @@ Default model and layout:
   elastic EP and EPLB, as required by its TCPStore-based rank-management
   interface.
 
+For authenticated Hugging Face downloads, export the token directly:
+
+```bash
+export HF_TOKEN="hf_..."
+```
+
+Alternatively, keep it in a protected file and pass only the path:
+
+```bash
+chmod 600 /workspace/secrets/huggingface-token
+export HF_TOKEN_FILE=/workspace/secrets/huggingface-token
+```
+
+All server configurations inherit the token. Its value is not written to the
+benchmark results; `run-info` records only whether authentication was configured.
+
 Run both configs:
 
 ```bash
@@ -33,8 +49,7 @@ RESULT_DIR=bench-results-ft-communicator-ep-8gpu \
 benchmarks/ft_nccl_ep_communicator/run_all.sh ft-a2av
 ```
 
-The initial `ft_nccl_ep` PoC supports single-node, linear expert placement and
-unquantized FP16/BF16/FP32 activation transport. It defaults to eager execution
-because routing currently uses dynamic PyTorch packing and host-visible receive
-counts. Replace those steps with fixed-address GPU routing kernels before using
-CUDA graphs for the final performance comparison.
+The `ft_nccl_ep` PoC supports single-node, linear expert placement and
+unquantized FP16/BF16/FP32 activation transport. Device-side fixed-address
+routing permits CUDA graph execution when the installed FT NCCL package exposes
+graph-safe opaque all-to-allv operations.

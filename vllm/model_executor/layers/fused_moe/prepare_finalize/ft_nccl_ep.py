@@ -12,15 +12,239 @@ from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import (
     TopKWeightAndReduceContiguous,
     TopKWeightAndReduceDelegate,
 )
+from vllm.triton_utils import tl, triton
+from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.worker.ubatching import dbo_enabled
 
 
 @dataclass
 class _FTNcclEPRoute:
-    send_token_indices: list[torch.Tensor]
-    send_counts: list[int]
-    recv_counts: list[int]
+    positions: torch.Tensor
+    recv_counts: torch.Tensor
     num_input_tokens: int
+
+
+@triton.jit
+def _ft_nccl_ep_route_kernel(
+    topk_ids_ptr,
+    send_counts_ptr,
+    positions_ptr,
+    num_tokens: tl.constexpr,
+    ep_size: tl.constexpr,
+    experts_per_rank: tl.constexpr,
+    top_k: tl.constexpr,
+):
+    token = tl.program_id(0)
+    destination = tl.program_id(1)
+    selected = False
+    for topk_idx in tl.static_range(top_k):
+        expert = tl.load(topk_ids_ptr + token * top_k + topk_idx)
+        selected |= expert // experts_per_rank == destination
+
+    position = tl.atomic_add(send_counts_ptr + destination, 1, mask=selected)
+    tl.store(
+        positions_ptr + token * ep_size + destination,
+        tl.where(selected, position, -1),
+    )
+
+
+@triton.jit
+def _ft_nccl_ep_pack_kernel(
+    hidden_ptr,
+    topk_ids_ptr,
+    topk_weights_ptr,
+    positions_ptr,
+    send_hidden_ptr,
+    send_ids_ptr,
+    send_weights_ptr,
+    num_tokens: tl.constexpr,
+    hidden_size: tl.constexpr,
+    top_k: tl.constexpr,
+    ep_size: tl.constexpr,
+    capacity: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    token = tl.program_id(0)
+    destination = tl.program_id(1)
+    block = tl.program_id(2)
+    position = tl.load(positions_ptr + token * ep_size + destination)
+    selected = position >= 0
+    destination_row = destination * capacity + position
+
+    hidden_offsets = block * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    hidden_mask = selected & (hidden_offsets < hidden_size)
+    hidden = tl.load(
+        hidden_ptr + token * hidden_size + hidden_offsets,
+        mask=hidden_mask,
+    )
+    tl.store(
+        send_hidden_ptr + destination_row * hidden_size + hidden_offsets,
+        hidden,
+        mask=hidden_mask,
+    )
+
+    metadata_mask = selected & (hidden_offsets < top_k)
+    ids = tl.load(
+        topk_ids_ptr + token * top_k + hidden_offsets,
+        mask=metadata_mask,
+    )
+    weights = tl.load(
+        topk_weights_ptr + token * top_k + hidden_offsets,
+        mask=metadata_mask,
+    )
+    tl.store(
+        send_ids_ptr + destination_row * top_k + hidden_offsets,
+        ids,
+        mask=metadata_mask,
+    )
+    tl.store(
+        send_weights_ptr + destination_row * top_k + hidden_offsets,
+        weights,
+        mask=metadata_mask,
+    )
+
+
+@triton.jit
+def _ft_nccl_ep_combine_kernel(
+    recv_ptr,
+    positions_ptr,
+    output_ptr,
+    num_tokens: tl.constexpr,
+    hidden_size: tl.constexpr,
+    ep_size: tl.constexpr,
+    capacity: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    token = tl.program_id(0)
+    offsets = tl.program_id(1) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < hidden_size
+    result = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    for source in tl.static_range(ep_size):
+        position = tl.load(positions_ptr + token * ep_size + source)
+        selected = position >= 0
+        source_row = source * capacity + position
+        contribution = tl.load(
+            recv_ptr + source_row * hidden_size + offsets,
+            mask=mask & selected,
+            other=0.0,
+        )
+        result += contribution
+    tl.store(output_ptr + token * hidden_size + offsets, result, mask=mask)
+
+
+def _ft_nccl_ep_pack(
+    hidden_states: torch.Tensor,
+    topk_ids: torch.Tensor,
+    topk_weights: torch.Tensor,
+    send_counts: torch.Tensor,
+    positions: torch.Tensor,
+    send_hidden: torch.Tensor,
+    send_ids: torch.Tensor,
+    send_weights: torch.Tensor,
+    ep_size: int,
+    experts_per_rank: int,
+    capacity: int,
+) -> None:
+    num_tokens, hidden_size = hidden_states.shape
+    top_k = topk_ids.shape[1]
+    send_counts.zero_()
+    positions.fill_(-1)
+    _ft_nccl_ep_route_kernel[(num_tokens, ep_size)](
+        topk_ids,
+        send_counts,
+        positions,
+        num_tokens=num_tokens,
+        ep_size=ep_size,
+        experts_per_rank=experts_per_rank,
+        top_k=top_k,
+    )
+    block_size = min(triton.next_power_of_2(max(hidden_size, top_k)), 256)
+    _ft_nccl_ep_pack_kernel[
+        (num_tokens, ep_size, triton.cdiv(hidden_size, block_size))
+    ](
+        hidden_states,
+        topk_ids,
+        topk_weights,
+        positions,
+        send_hidden,
+        send_ids,
+        send_weights,
+        num_tokens=num_tokens,
+        hidden_size=hidden_size,
+        top_k=top_k,
+        ep_size=ep_size,
+        capacity=capacity,
+        BLOCK_SIZE=block_size,
+    )
+
+
+def _ft_nccl_ep_pack_fake(
+    hidden_states: torch.Tensor,
+    topk_ids: torch.Tensor,
+    topk_weights: torch.Tensor,
+    send_counts: torch.Tensor,
+    positions: torch.Tensor,
+    send_hidden: torch.Tensor,
+    send_ids: torch.Tensor,
+    send_weights: torch.Tensor,
+    ep_size: int,
+    experts_per_rank: int,
+    capacity: int,
+) -> None:
+    return None
+
+
+direct_register_custom_op(
+    op_name="ft_nccl_ep_pack",
+    op_func=_ft_nccl_ep_pack,
+    mutates_args=[
+        "send_counts",
+        "positions",
+        "send_hidden",
+        "send_ids",
+        "send_weights",
+    ],
+    fake_impl=_ft_nccl_ep_pack_fake,
+)
+
+
+def _ft_nccl_ep_combine(
+    recv: torch.Tensor,
+    positions: torch.Tensor,
+    output: torch.Tensor,
+    ep_size: int,
+    capacity: int,
+) -> None:
+    num_tokens, hidden_size = output.shape
+    block_size = min(triton.next_power_of_2(hidden_size), 256)
+    _ft_nccl_ep_combine_kernel[(num_tokens, triton.cdiv(hidden_size, block_size))](
+        recv,
+        positions,
+        output,
+        num_tokens=num_tokens,
+        hidden_size=hidden_size,
+        ep_size=ep_size,
+        capacity=capacity,
+        BLOCK_SIZE=block_size,
+    )
+
+
+def _ft_nccl_ep_combine_fake(
+    recv: torch.Tensor,
+    positions: torch.Tensor,
+    output: torch.Tensor,
+    ep_size: int,
+    capacity: int,
+) -> None:
+    return None
+
+
+direct_register_custom_op(
+    op_name="ft_nccl_ep_combine",
+    op_func=_ft_nccl_ep_combine,
+    mutates_args=["output"],
+    fake_impl=_ft_nccl_ep_combine_fake,
+)
 
 
 class FTNcclEPHandle:
@@ -89,6 +313,19 @@ class FTNcclEPHandle:
         self.recv_hidden = torch.empty_like(self.recv_hidden_slots)
         self.recv_ids = torch.empty_like(self.recv_ids_slots)
         self.recv_weights = torch.empty_like(self.recv_weights_slots)
+        self.send_counts = torch.empty(
+            ep_size, dtype=torch.int32, device=self.send_hidden.device
+        )
+        self.send_displacements = (
+            torch.arange(ep_size, dtype=torch.int64, device=self.send_hidden.device)
+            * max_num_tokens_per_rank
+        )
+        self.route_positions = torch.empty(
+            max_num_tokens_per_rank,
+            ep_size,
+            dtype=torch.int32,
+            device=self.send_hidden.device,
+        )
 
         dispatch_row_bytes = [
             token_hidden_size * input_dtype.itemsize,
@@ -108,6 +345,8 @@ class FTNcclEPHandle:
         )
 
     def _check_status(self, operation: str) -> None:
+        if torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing():
+            return
         status = self.pg.check_and_clear_error()
         if status != 0:
             raise RuntimeError(f"FT NCCL EP {operation} failed with status {status}")
@@ -137,45 +376,25 @@ class FTNcclEPHandle:
         ):
             raise ValueError("ft_nccl_ep top-k weight shape or dtype changed")
 
-        send_counts: list[int] = []
-        send_token_indices: list[torch.Tensor] = []
-        send_offset = 0
-        for destination in range(self.ep_size):
-            first_expert = destination * self.experts_per_rank
-            last_expert = first_expert + self.experts_per_rank
-            selected = torch.any(
-                (topk_ids >= first_expert) & (topk_ids < last_expert), dim=1
-            )
-            token_indices = torch.nonzero(selected, as_tuple=False).flatten()
-            count = token_indices.numel()
-            if count > self.max_tokens:
-                raise RuntimeError(
-                    f"ft_nccl_ep route to rank {destination} has {count} rows, "
-                    f"capacity is {self.max_tokens}"
-                )
-            end = send_offset + count
-            if count:
-                torch.index_select(
-                    hidden_states,
-                    0,
-                    token_indices,
-                    out=self.send_hidden[send_offset:end],
-                )
-                torch.index_select(
-                    topk_ids,
-                    0,
-                    token_indices,
-                    out=self.send_ids[send_offset:end],
-                )
-                torch.index_select(
-                    topk_weights,
-                    0,
-                    token_indices,
-                    out=self.send_weights[send_offset:end],
-                )
-            send_counts.append(count)
-            send_token_indices.append(token_indices)
-            send_offset = end
+        positions = self.route_positions[:num_tokens]
+        torch.ops.vllm.ft_nccl_ep_pack(
+            hidden_states,
+            topk_ids,
+            topk_weights,
+            self.send_counts,
+            positions,
+            self.send_hidden,
+            self.send_ids,
+            self.send_weights,
+            self.ep_size,
+            self.experts_per_rank,
+            self.max_tokens,
+        )
+        for source in range(self.ep_size):
+            slot = source * self.max_tokens
+            slot_end = slot + num_tokens
+            self.recv_ids_slots[slot:slot_end].fill_(-1)
+            self.recv_weights_slots[slot:slot_end].zero_()
 
         work, device_recv_counts = self.pg.all_to_allv_multi(
             [self.send_hidden, self.send_ids, self.send_weights],
@@ -184,44 +403,40 @@ class FTNcclEPHandle:
                 self.recv_ids_slots,
                 self.recv_weights_slots,
             ],
-            send_counts,
+            self.send_counts,
             self.dispatch_workspace,
+            self.send_displacements,
         )
         work.wait()
-        recv_counts = [int(v) for v in device_recv_counts.cpu().tolist()]
         self._check_status("dispatch")
 
-        recv_offset = 0
-        for source, count in enumerate(recv_counts):
-            if count > self.max_tokens:
-                raise RuntimeError(
-                    f"ft_nccl_ep received {count} rows from rank {source}, "
-                    f"capacity is {self.max_tokens}"
-                )
-            end = recv_offset + count
+        # Keep the routed shape fixed for a captured input shape. Invalid rows
+        # retain expert id -1 and zero weight, so standard MoE kernels skip them.
+        recv_rows = self.ep_size * num_tokens
+        for source in range(self.ep_size):
+            output_start = source * num_tokens
+            output_end = output_start + num_tokens
             slot = source * self.max_tokens
-            if count:
-                self.recv_hidden[recv_offset:end].copy_(
-                    self.recv_hidden_slots[slot : slot + count]
-                )
-                self.recv_ids[recv_offset:end].copy_(
-                    self.recv_ids_slots[slot : slot + count]
-                )
-                self.recv_weights[recv_offset:end].copy_(
-                    self.recv_weights_slots[slot : slot + count]
-                )
-            recv_offset = end
+            slot_end = slot + num_tokens
+            self.recv_hidden[output_start:output_end].copy_(
+                self.recv_hidden_slots[slot:slot_end]
+            )
+            self.recv_ids[output_start:output_end].copy_(
+                self.recv_ids_slots[slot:slot_end]
+            )
+            self.recv_weights[output_start:output_end].copy_(
+                self.recv_weights_slots[slot:slot_end]
+            )
 
         route = _FTNcclEPRoute(
-            send_token_indices=send_token_indices,
-            send_counts=send_counts,
-            recv_counts=recv_counts,
+            positions=positions,
+            recv_counts=device_recv_counts,
             num_input_tokens=num_tokens,
         )
         return (
-            self.recv_hidden[:recv_offset],
-            self.recv_ids[:recv_offset],
-            self.recv_weights[:recv_offset],
+            self.recv_hidden[:recv_rows],
+            self.recv_ids[:recv_rows],
+            self.recv_weights[:recv_rows],
             route,
         )
 
@@ -231,7 +446,7 @@ class FTNcclEPHandle:
         route: _FTNcclEPRoute,
         output: torch.Tensor,
     ) -> None:
-        expected_rows = sum(route.recv_counts)
+        expected_rows = self.ep_size * route.num_input_tokens
         if local_contributions.shape != (expected_rows, self.hidden_size):
             raise ValueError(
                 "ft_nccl_ep combine input does not match the dispatch route"
@@ -239,34 +454,30 @@ class FTNcclEPHandle:
         if output.shape != (route.num_input_tokens, self.hidden_size):
             raise ValueError("ft_nccl_ep output does not match the source tokens")
 
-        # Dispatch compaction preserved source order, so the local contribution
-        # is already packed by the rank to which it must be returned.
-        self.combine_send[:expected_rows].copy_(local_contributions)
+        for destination in range(self.ep_size):
+            input_start = destination * route.num_input_tokens
+            input_end = input_start + route.num_input_tokens
+            slot = destination * self.max_tokens
+            self.combine_send[slot : slot + route.num_input_tokens].copy_(
+                local_contributions[input_start:input_end]
+            )
         work, device_returned_counts = self.pg.all_to_allv_multi(
             [self.combine_send],
             [self.combine_recv_slots],
             route.recv_counts,
             self.combine_workspace,
+            self.send_displacements,
         )
         work.wait()
-        returned_counts = [int(v) for v in device_returned_counts.cpu().tolist()]
         self._check_status("combine")
-        if returned_counts != route.send_counts:
-            raise RuntimeError(
-                "ft_nccl_ep combine counts do not match the dispatch route: "
-                f"returned={returned_counts}, expected={route.send_counts}"
-            )
-
-        output.zero_()
-        for source, count in enumerate(returned_counts):
-            if not count:
-                continue
-            slot = source * self.max_tokens
-            output.index_add_(
-                0,
-                route.send_token_indices[source],
-                self.combine_recv_slots[slot : slot + count],
-            )
+        del device_returned_counts
+        torch.ops.vllm.ft_nccl_ep_combine(
+            self.combine_recv_slots,
+            route.positions,
+            output,
+            self.ep_size,
+            self.max_tokens,
+        )
 
 
 class FTNcclEPPrepareAndFinalize(mk.FusedMoEPrepareAndFinalizeModular):
