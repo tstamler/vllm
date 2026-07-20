@@ -1,248 +1,0 @@
-Writing benchmark result to /workspace/vllm/bench-results-ft-communicator-8gpu/torch-nccl-prefill-20260709-132931.json
-[E709 13:29:32.460243173 shim_common.cpp:1458] Exception in aoti_torch: Tried to register an operator (_C::persistent_masked_m_silu_mul_quant(Tensor input, Tensor counts, Tensor($0! -> ) y_q, Tensor($1! -> ) y_s, bool use_ue8m0) -> ()) with the same name and overload name multiple times. Each overload's schema should only be registered with a single call to def(). Duplicate registration: registered at /workspace/csrc/libtorch_stable/torch_bindings.cpp:10. Original registration: registered at /workspace/csrc/torch_bindings.cpp:21
-Exception raised from registerDef at /pytorch/aten/src/ATen/core/dispatch/Dispatcher.cpp:248 (most recent call first):
-frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x7ffff6d7205d in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) + 0xc3 (0x7ffff6d066fd in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #2: c10::Dispatcher::registerDef(c10::FunctionSchema, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::vector<at::Tag, std::allocator<at::Tag> >) + 0x35e (0x7fff0e8811fe in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #3: torch::Library::_def(c10::FunctionSchema&&, c10::OperatorName*, std::vector<at::Tag, std::allocator<at::Tag> > const&, torch::_RegisterOrVerify) & + 0x514 (0x7fff0e8c2254 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #4: aoti_torch_library_def + 0x99 (0x7fff12ad45b9 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #5: <unknown function> + 0x2bdaf1 (0x7ffded2beaf1 in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #6: <unknown function> + 0x2bf0ce (0x7ffded2c00ce in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #7: <unknown function> + 0x279d92 (0x7ffded27ad92 in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #8: <unknown function> + 0x571f (0x7ffff7fca71f in /lib64/ld-linux-x86-64.so.2)
-frame #9: <unknown function> + 0x5824 (0x7ffff7fca824 in /lib64/ld-linux-x86-64.so.2)
-frame #10: _dl_catch_exception + 0x132 (0x7ffff7fc65b2 in /lib64/ld-linux-x86-64.so.2)
-frame #11: <unknown function> + 0xcd7c (0x7ffff7fd1d7c in /lib64/ld-linux-x86-64.so.2)
-frame #12: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #13: <unknown function> + 0xd164 (0x7ffff7fd2164 in /lib64/ld-linux-x86-64.so.2)
-frame #14: <unknown function> + 0x981a4 (0x7ffff7d0c1a4 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #15: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #16: <unknown function> + 0x1669 (0x7ffff7fc6669 in /lib64/ld-linux-x86-64.so.2)
-frame #17: <unknown function> + 0x97c83 (0x7ffff7d0bc83 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #18: dlopen + 0x6f (0x7ffff7d0c25f in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #19: /workspace/vllm/.venv/bin/python() [0x6bc36c]
-frame #20: /workspace/vllm/.venv/bin/python() [0x6a946a]
-frame #21: /workspace/vllm/.venv/bin/python() [0x6a8bf2]
-frame #22: /workspace/vllm/.venv/bin/python() [0x581f37]
-frame #23: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #24: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #25: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #26: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #27: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #28: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #29: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #30: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #31: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #32: PyObject_CallOneArg + 0x4d (0x54a65d in /workspace/vllm/.venv/bin/python)
-frame #33: /workspace/vllm/.venv/bin/python() [0x582e84]
-frame #34: _PyObject_LookupAttr + 0x7a (0x584bea in /workspace/vllm/.venv/bin/python)
-frame #35: /workspace/vllm/.venv/bin/python() [0x5d2b8a]
-frame #36: _PyEval_EvalFrameDefault + 0x207d (0x5d84fd in /workspace/vllm/.venv/bin/python)
-frame #37: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #38: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #39: PyImport_ImportModuleLevelObject + 0x5eb (0x5fda5b in /workspace/vllm/.venv/bin/python)
-frame #40: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #41: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #42: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #43: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #44: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #45: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #46: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #47: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #48: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #49: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #50: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #51: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #52: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #53: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #54: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #55: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #56: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #57: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #58: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #59: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #60: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #61: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #62: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-
-[E709 13:29:32.462214311 shim_common.cpp:1458] Exception in aoti_torch: Tried to register an operator (_C::weak_ref_tensor(Tensor input) -> Tensor) with the same name and overload name multiple times. Each overload's schema should only be registered with a single call to def(). Duplicate registration: registered at /workspace/csrc/libtorch_stable/torch_bindings.cpp:10. Original registration: registered at /workspace/csrc/torch_bindings.cpp:21
-Exception raised from registerDef at /pytorch/aten/src/ATen/core/dispatch/Dispatcher.cpp:248 (most recent call first):
-frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x7ffff6d7205d in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) + 0xc3 (0x7ffff6d066fd in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #2: c10::Dispatcher::registerDef(c10::FunctionSchema, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::vector<at::Tag, std::allocator<at::Tag> >) + 0x35e (0x7fff0e8811fe in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #3: torch::Library::_def(c10::FunctionSchema&&, c10::OperatorName*, std::vector<at::Tag, std::allocator<at::Tag> > const&, torch::_RegisterOrVerify) & + 0x514 (0x7fff0e8c2254 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #4: aoti_torch_library_def + 0x99 (0x7fff12ad45b9 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #5: <unknown function> + 0x2bdb00 (0x7ffded2beb00 in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #6: <unknown function> + 0x2bf0ce (0x7ffded2c00ce in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #7: <unknown function> + 0x279d92 (0x7ffded27ad92 in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #8: <unknown function> + 0x571f (0x7ffff7fca71f in /lib64/ld-linux-x86-64.so.2)
-frame #9: <unknown function> + 0x5824 (0x7ffff7fca824 in /lib64/ld-linux-x86-64.so.2)
-frame #10: _dl_catch_exception + 0x132 (0x7ffff7fc65b2 in /lib64/ld-linux-x86-64.so.2)
-frame #11: <unknown function> + 0xcd7c (0x7ffff7fd1d7c in /lib64/ld-linux-x86-64.so.2)
-frame #12: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #13: <unknown function> + 0xd164 (0x7ffff7fd2164 in /lib64/ld-linux-x86-64.so.2)
-frame #14: <unknown function> + 0x981a4 (0x7ffff7d0c1a4 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #15: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #16: <unknown function> + 0x1669 (0x7ffff7fc6669 in /lib64/ld-linux-x86-64.so.2)
-frame #17: <unknown function> + 0x97c83 (0x7ffff7d0bc83 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #18: dlopen + 0x6f (0x7ffff7d0c25f in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #19: /workspace/vllm/.venv/bin/python() [0x6bc36c]
-frame #20: /workspace/vllm/.venv/bin/python() [0x6a946a]
-frame #21: /workspace/vllm/.venv/bin/python() [0x6a8bf2]
-frame #22: /workspace/vllm/.venv/bin/python() [0x581f37]
-frame #23: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #24: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #25: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #26: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #27: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #28: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #29: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #30: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #31: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #32: PyObject_CallOneArg + 0x4d (0x54a65d in /workspace/vllm/.venv/bin/python)
-frame #33: /workspace/vllm/.venv/bin/python() [0x582e84]
-frame #34: _PyObject_LookupAttr + 0x7a (0x584bea in /workspace/vllm/.venv/bin/python)
-frame #35: /workspace/vllm/.venv/bin/python() [0x5d2b8a]
-frame #36: _PyEval_EvalFrameDefault + 0x207d (0x5d84fd in /workspace/vllm/.venv/bin/python)
-frame #37: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #38: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #39: PyImport_ImportModuleLevelObject + 0x5eb (0x5fda5b in /workspace/vllm/.venv/bin/python)
-frame #40: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #41: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #42: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #43: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #44: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #45: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #46: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #47: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #48: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #49: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #50: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #51: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #52: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #53: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #54: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #55: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #56: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #57: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #58: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #59: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #60: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #61: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #62: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-
-[E709 13:29:32.464118116 shim_common.cpp:1458] Exception in aoti_torch: Tried to register an operator (_C::silu_and_mul_quant(Tensor($0! -> ) result, Tensor input, Tensor scale) -> ()) with the same name and overload name multiple times. Each overload's schema should only be registered with a single call to def(). Duplicate registration: registered at /workspace/csrc/libtorch_stable/torch_bindings.cpp:10. Original registration: registered at /workspace/csrc/torch_bindings.cpp:21
-Exception raised from registerDef at /pytorch/aten/src/ATen/core/dispatch/Dispatcher.cpp:248 (most recent call first):
-frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x7ffff6d7205d in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) + 0xc3 (0x7ffff6d066fd in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
-frame #2: c10::Dispatcher::registerDef(c10::FunctionSchema, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::vector<at::Tag, std::allocator<at::Tag> >) + 0x35e (0x7fff0e8811fe in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #3: torch::Library::_def(c10::FunctionSchema&&, c10::OperatorName*, std::vector<at::Tag, std::allocator<at::Tag> > const&, torch::_RegisterOrVerify) & + 0x514 (0x7fff0e8c2254 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #4: aoti_torch_library_def + 0x99 (0x7fff12ad45b9 in /workspace/vllm/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
-frame #5: <unknown function> + 0x2bdb3c (0x7ffded2beb3c in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #6: <unknown function> + 0x2bf0ce (0x7ffded2c00ce in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #7: <unknown function> + 0x279d92 (0x7ffded27ad92 in /workspace/vllm/vllm/_C_stable_libtorch.abi3.so)
-frame #8: <unknown function> + 0x571f (0x7ffff7fca71f in /lib64/ld-linux-x86-64.so.2)
-frame #9: <unknown function> + 0x5824 (0x7ffff7fca824 in /lib64/ld-linux-x86-64.so.2)
-frame #10: _dl_catch_exception + 0x132 (0x7ffff7fc65b2 in /lib64/ld-linux-x86-64.so.2)
-frame #11: <unknown function> + 0xcd7c (0x7ffff7fd1d7c in /lib64/ld-linux-x86-64.so.2)
-frame #12: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #13: <unknown function> + 0xd164 (0x7ffff7fd2164 in /lib64/ld-linux-x86-64.so.2)
-frame #14: <unknown function> + 0x981a4 (0x7ffff7d0c1a4 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #15: _dl_catch_exception + 0x9c (0x7ffff7fc651c in /lib64/ld-linux-x86-64.so.2)
-frame #16: <unknown function> + 0x1669 (0x7ffff7fc6669 in /lib64/ld-linux-x86-64.so.2)
-frame #17: <unknown function> + 0x97c83 (0x7ffff7d0bc83 in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #18: dlopen + 0x6f (0x7ffff7d0c25f in /usr/lib/x86_64-linux-gnu/libc.so.6)
-frame #19: /workspace/vllm/.venv/bin/python() [0x6bc36c]
-frame #20: /workspace/vllm/.venv/bin/python() [0x6a946a]
-frame #21: /workspace/vllm/.venv/bin/python() [0x6a8bf2]
-frame #22: /workspace/vllm/.venv/bin/python() [0x581f37]
-frame #23: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #24: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #25: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #26: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #27: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #28: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #29: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #30: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #31: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #32: PyObject_CallOneArg + 0x4d (0x54a65d in /workspace/vllm/.venv/bin/python)
-frame #33: /workspace/vllm/.venv/bin/python() [0x582e84]
-frame #34: _PyObject_LookupAttr + 0x7a (0x584bea in /workspace/vllm/.venv/bin/python)
-frame #35: /workspace/vllm/.venv/bin/python() [0x5d2b8a]
-frame #36: _PyEval_EvalFrameDefault + 0x207d (0x5d84fd in /workspace/vllm/.venv/bin/python)
-frame #37: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #38: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #39: PyImport_ImportModuleLevelObject + 0x5eb (0x5fda5b in /workspace/vllm/.venv/bin/python)
-frame #40: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #41: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #42: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #43: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #44: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #45: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #46: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #47: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #48: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #49: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #50: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #51: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #52: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #53: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #54: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-frame #55: PyImport_ImportModuleLevelObject + 0x395 (0x5fd805 in /workspace/vllm/.venv/bin/python)
-frame #56: _PyEval_EvalFrameDefault + 0x5eee (0x5dc36e in /workspace/vllm/.venv/bin/python)
-frame #57: PyEval_EvalCode + 0x15b (0x5d543b in /workspace/vllm/.venv/bin/python)
-frame #58: /workspace/vllm/.venv/bin/python() [0x5d322c]
-frame #59: /workspace/vllm/.venv/bin/python() [0x581d1d]
-frame #60: _PyEval_EvalFrameDefault + 0x4c3a (0x5db0ba in /workspace/vllm/.venv/bin/python)
-frame #61: /workspace/vllm/.venv/bin/python() [0x549d47]
-frame #62: PyObject_CallMethodObjArgs + 0xe3 (0x54b5c3 in /workspace/vllm/.venv/bin/python)
-
-[W709 13:29:32.466185708 OperatorEntry.cpp:208] Warning: Warning only once for all operators,  other operators may also be overridden.
-  Overriding a previously registered kernel for the same operator and the same dispatch key
-  operator: _C::persistent_masked_m_silu_mul_quant(Tensor input, Tensor counts, Tensor($0! -> ) y_q, Tensor($1! -> ) y_s, bool use_ue8m0) -> ()
-    registered at /workspace/csrc/torch_bindings.cpp:21
-  dispatch key: CUDA
-  previous kernel: registered at /workspace/csrc/torch_bindings.cpp:21
-       new kernel: registered at /workspace/csrc/libtorch_stable/torch_bindings.cpp:603 (function operator())
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7ff8dd0ad760>, trust_remote_code=False, seed=0, num_prompts=512, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=256, model='Qwen/Qwen2.5-32B-Instruct', input_len=2048, output_len=128, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=64, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=['config=torch-nccl', 'workload=prefill', 'tp=8', 'model=Qwen/Qwen2.5-32B-Instruct', 'dtype=bfloat16', 'max_model_len=4096', 'max_num_batched_tokens=4096'], result_dir='/workspace/vllm/bench-results-ft-communicator-8gpu', result_filename='torch-nccl-prefill-20260709-132931.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-bc1b65cf-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=1800, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
-INFO 07-09 13:29:39 [utils.py:90] Sampling input_len from [2048, 2048] and output_len from [128, 128]
-WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
-Starting initial single prompt test run...
-Waiting for endpoint to become up in 1800 seconds
- |          | 00:00 elapsed, ? remaining |          | 00:00 elapsed, 00:24 remaining |          | 00:00 elapsed, 625:40:53 remaining
-Initial test run completed.
-Warming up with 64 requests...
-  0%|          | 0/64 [00:00<?, ?it/s]  2%|▏         | 1/64 [00:01<01:31,  1.45s/it]  3%|▎         | 2/64 [00:01<00:43,  1.41it/s] 33%|███▎      | 21/64 [00:01<00:02, 19.33it/s]100%|██████████| 64/64 [00:01<00:00, 33.97it/s]
-Warmup run completed.
-Starting main benchmark run...
-Traffic request rate: inf
-Burstiness factor: 1.0 (Poisson process)
-Maximum request concurrency: 256
-  0%|          | 0/512 [00:00<?, ?it/s]  0%|          | 1/512 [00:09<1:20:11,  9.42s/it]  0%|          | 2/512 [00:12<46:13,  5.44s/it]    2%|▏         | 11/512 [00:12<05:26,  1.53it/s]  3%|▎         | 15/512 [00:12<03:36,  2.30it/s]  4%|▍         | 20/512 [00:12<02:17,  3.57it/s]  5%|▍         | 24/512 [00:12<01:41,  4.79it/s]  5%|▌         | 28/512 [00:13<01:17,  6.26it/s]  6%|▋         | 32/512 [00:13<01:00,  7.94it/s]  7%|▋         | 36/512 [00:13<00:48,  9.75it/s]  8%|▊         | 41/512 [00:13<00:37, 12.47it/s]  9%|▉         | 45/512 [00:13<00:33, 14.07it/s] 10%|▉         | 49/512 [00:13<00:29, 15.46it/s] 10%|█         | 53/512 [00:14<00:27, 16.69it/s] 11%|█▏        | 58/512 [00:14<00:23, 19.00it/s] 12%|█▏        | 62/512 [00:14<00:23, 19.43it/s] 13%|█▎        | 66/512 [00:14<00:22, 19.71it/s] 14%|█▎        | 70/512 [00:14<00:22, 19.92it/s] 14%|█▍        | 74/512 [00:15<00:21, 20.03it/s] 15%|█▌        | 79/512 [00:15<00:19, 21.74it/s] 16%|█▌        | 83/512 [00:15<00:20, 21.36it/s] 17%|█▋        | 87/512 [00:15<00:20, 21.13it/s] 18%|█▊        | 91/512 [00:15<00:20, 20.91it/s] 19%|█▊        | 95/512 [00:16<00:20, 20.79it/s] 19%|█▉        | 99/512 [00:16<00:19, 20.69it/s] 20%|██        | 104/512 [00:16<00:18, 22.21it/s] 21%|██        | 108/512 [00:16<00:18, 21.63it/s] 22%|██▏       | 112/512 [00:16<00:18, 21.28it/s] 23%|██▎       | 116/512 [00:17<00:18, 21.04it/s] 23%|██▎       | 120/512 [00:17<00:18, 20.88it/s] 24%|██▍       | 124/512 [00:17<00:18, 20.69it/s] 25%|██▌       | 128/512 [00:17<00:18, 20.70it/s] 26%|██▌       | 131/512 [00:17<00:17, 22.34it/s] 26%|██▋       | 135/512 [00:17<00:17, 21.81it/s] 27%|██▋       | 139/512 [00:18<00:17, 21.41it/s] 28%|██▊       | 142/512 [00:18<00:16, 23.05it/s] 28%|██▊       | 145/512 [00:18<00:18, 20.37it/s] 29%|██▉       | 149/512 [00:18<00:17, 20.40it/s] 30%|██▉       | 153/512 [00:18<00:17, 20.45it/s] 31%|███       | 157/512 [00:19<00:17, 20.45it/s] 31%|███▏      | 161/512 [00:19<00:17, 20.48it/s] 32%|███▏      | 165/512 [00:19<00:16, 20.48it/s] 33%|███▎      | 170/512 [00:19<00:15, 22.08it/s] 34%|███▍      | 174/512 [00:19<00:15, 21.49it/s] 35%|███▍      | 178/512 [00:20<00:15, 21.18it/s] 36%|███▌      | 182/512 [00:20<00:15, 21.06it/s] 37%|███▋      | 187/512 [00:20<00:14, 22.38it/s] 37%|███▋      | 191/512 [00:20<00:14, 21.80it/s] 38%|███▊      | 195/512 [00:20<00:14, 21.37it/s] 39%|███▉      | 199/512 [00:21<00:14, 21.04it/s] 40%|███▉      | 203/512 [00:21<00:14, 20.92it/s] 40%|████      | 207/512 [00:21<00:14, 20.78it/s] 41%|████      | 211/512 [00:21<00:14, 20.72it/s] 42%|████▏     | 215/512 [00:21<00:14, 20.62it/s] 43%|████▎     | 219/512 [00:21<00:14, 20.60it/s] 44%|████▎     | 223/512 [00:22<00:14, 20.47it/s] 44%|████▍     | 227/512 [00:22<00:13, 20.55it/s] 45%|████▌     | 231/512 [00:22<00:13, 20.52it/s] 46%|████▌     | 234/512 [00:22<00:12, 22.22it/s] 46%|████▋     | 238/512 [00:22<00:12, 21.66it/s] 47%|████▋     | 242/512 [00:23<00:12, 21.23it/s] 48%|████▊     | 246/512 [00:23<00:12, 20.99it/s] 49%|████▉     | 250/512 [00:23<00:12, 20.32it/s] 50%|████▉     | 254/512 [00:23<00:12, 20.97it/s] 50%|█████     | 258/512 [00:24<00:24, 10.30it/s] 52%|█████▏    | 268/512 [00:24<00:12, 18.95it/s] 54%|█████▍    | 278/512 [00:24<00:08, 28.30it/s] 56%|█████▋    | 288/512 [00:24<00:05, 37.99it/s] 58%|█████▊    | 298/512 [00:24<00:04, 47.47it/s] 60%|██████    | 309/512 [00:25<00:03, 58.09it/s] 62%|██████▏   | 319/512 [00:25<00:02, 65.74it/s] 64%|██████▍   | 329/512 [00:25<00:02, 72.36it/s] 66%|██████▌   | 339/512 [00:25<00:02, 78.44it/s] 68%|██████▊   | 349/512 [00:25<00:01, 83.38it/s] 70%|███████   | 359/512 [00:25<00:01, 87.74it/s] 72%|███████▏  | 369/512 [00:25<00:01, 90.97it/s] 74%|███████▍  | 380/512 [00:25<00:01, 96.31it/s] 76%|███████▋  | 391/512 [00:25<00:01, 98.05it/s] 79%|███████▊  | 403/512 [00:26<00:01, 102.12it/s] 81%|████████▏ | 417/512 [00:26<00:00, 109.41it/s] 84%|████████▍ | 431/512 [00:26<00:00, 116.24it/s] 87%|████████▋ | 446/512 [00:26<00:00, 125.48it/s] 90%|█████████ | 462/512 [00:26<00:00, 132.81it/s] 95%|█████████▍| 484/512 [00:26<00:00, 156.58it/s]100%|██████████| 512/512 [00:26<00:00, 19.21it/s] 
-tip: install termplotlib and gnuplot to plot the metrics
-============ Serving Benchmark Result ============
-Successful requests:                     512       
-Failed requests:                         0         
-Maximum request concurrency:             256       
-Benchmark duration (s):                  26.65     
-Total input tokens:                      1048576   
-Total generated tokens:                  65536     
-Request throughput (req/s):              19.21     
-Output token throughput (tok/s):         2459.35   
-Peak output token throughput (tok/s):    7952.00   
-Peak concurrent requests:                282.00    
-Total token throughput (tok/s):          41809.02  
----------------Time to First Token----------------
-Mean TTFT (ms):                          3323.44   
-Median TTFT (ms):                        784.97    
-P99 TTFT (ms):                           11652.77  
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          75.17     
-Median TPOT (ms):                        90.47     
-P99 TPOT (ms):                           95.31     
----------------Inter-token Latency----------------
-Mean ITL (ms):                           75.17     
-Median ITL (ms):                         96.63     
-P99 ITL (ms):                            100.52    
-==================================================

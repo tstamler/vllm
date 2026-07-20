@@ -1,4 +1,0 @@
-== ft-a2av ==
-(Worker pid=1362247) INFO 07-17 08:15:25 [cuda_communicator.py:203] Using FTNcclEPAll2AllManager all2all manager.
-Starting routed FT NCCL A2AV EP server: model=deepseek-ai/DeepSeek-V2-Lite-Chat tp=1 dp=8
-

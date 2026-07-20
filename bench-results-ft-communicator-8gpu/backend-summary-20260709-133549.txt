@@ -1,3 +1,0 @@
-== ft-nccl ==
-(Worker pid=277689) INFO 07-09 13:36:31 [cuda_communicator.py:248] Using ['FT_NCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['FT_NCCL', 'NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
-

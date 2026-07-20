@@ -1,3 +1,0 @@
-== ag-rs ==
-(Worker pid=527198) INFO 07-15 14:11:17 [cuda_communicator.py:203] Using AgRsAll2AllManager all2all manager.
-
