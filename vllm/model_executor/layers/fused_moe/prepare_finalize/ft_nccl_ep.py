@@ -31,6 +31,18 @@ def _ft_nccl_ep_reset_counts_kernel(send_counts_ptr, ep_size: tl.constexpr):
 
 
 @triton.jit
+def _ft_nccl_ep_prefix_displacements_kernel(
+    counts_ptr,
+    displacements_ptr,
+    ep_size: tl.constexpr,
+):
+    offset = 0
+    for destination in tl.static_range(ep_size):
+        tl.store(displacements_ptr + destination, offset)
+        offset += tl.load(counts_ptr + destination)
+
+
+@triton.jit
 def _ft_nccl_ep_route_kernel(
     topk_ids_ptr,
     send_counts_ptr,
@@ -60,6 +72,7 @@ def _ft_nccl_ep_pack_kernel(
     topk_ids_ptr,
     topk_weights_ptr,
     positions_ptr,
+    send_displacements_ptr,
     send_hidden_ptr,
     send_ids_ptr,
     send_weights_ptr,
@@ -68,6 +81,7 @@ def _ft_nccl_ep_pack_kernel(
     top_k: tl.constexpr,
     ep_size: tl.constexpr,
     capacity: tl.constexpr,
+    packed: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     token = tl.program_id(0)
@@ -75,7 +89,10 @@ def _ft_nccl_ep_pack_kernel(
     block = tl.program_id(2)
     position = tl.load(positions_ptr + token * ep_size + destination)
     selected = (position >= 0) & (position < capacity)
-    destination_row = destination * capacity + position
+    if packed:
+        destination_row = tl.load(send_displacements_ptr + destination) + position
+    else:
+        destination_row = destination * capacity + position
 
     hidden_offsets = block * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     hidden_mask = selected & (hidden_offsets < hidden_size)
@@ -138,18 +155,49 @@ def _ft_nccl_ep_combine_kernel(
     tl.store(output_ptr + token * hidden_size + offsets, result, mask=mask)
 
 
+@triton.jit
+def _ft_nccl_ep_pack_combine_kernel(
+    contributions_ptr,
+    counts_ptr,
+    displacements_ptr,
+    packed_ptr,
+    num_tokens: tl.constexpr,
+    hidden_size: tl.constexpr,
+    ep_size: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    destination = tl.program_id(0)
+    position = tl.program_id(1)
+    offsets = tl.program_id(2) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    selected = position < tl.load(counts_ptr + destination)
+    hidden_mask = selected & (offsets < hidden_size)
+    source_row = destination * num_tokens + position
+    destination_row = tl.load(displacements_ptr + destination) + position
+    contribution = tl.load(
+        contributions_ptr + source_row * hidden_size + offsets,
+        mask=hidden_mask,
+    )
+    tl.store(
+        packed_ptr + destination_row * hidden_size + offsets,
+        contribution,
+        mask=hidden_mask,
+    )
+
+
 def _ft_nccl_ep_pack(
     hidden_states: torch.Tensor,
     topk_ids: torch.Tensor,
     topk_weights: torch.Tensor,
     send_counts: torch.Tensor,
     positions: torch.Tensor,
+    send_displacements: torch.Tensor,
     send_hidden: torch.Tensor,
     send_ids: torch.Tensor,
     send_weights: torch.Tensor,
     ep_size: int,
     experts_per_rank: int,
     capacity: int,
+    packed: bool,
 ) -> None:
     num_tokens, hidden_size = hidden_states.shape
     top_k = topk_ids.shape[1]
@@ -166,6 +214,12 @@ def _ft_nccl_ep_pack(
         experts_per_rank=experts_per_rank,
         top_k=top_k,
     )
+    if packed:
+        _ft_nccl_ep_prefix_displacements_kernel[(1,)](
+            send_counts,
+            send_displacements,
+            ep_size=ep_size,
+        )
     block_size = min(triton.next_power_of_2(max(hidden_size, top_k)), 256)
     _ft_nccl_ep_pack_kernel[
         (num_tokens, ep_size, triton.cdiv(hidden_size, block_size))
@@ -174,6 +228,7 @@ def _ft_nccl_ep_pack(
         topk_ids,
         topk_weights,
         positions,
+        send_displacements,
         send_hidden,
         send_ids,
         send_weights,
@@ -182,6 +237,7 @@ def _ft_nccl_ep_pack(
         top_k=top_k,
         ep_size=ep_size,
         capacity=capacity,
+        packed=packed,
         BLOCK_SIZE=block_size,
     )
 
@@ -192,12 +248,14 @@ def _ft_nccl_ep_pack_fake(
     topk_weights: torch.Tensor,
     send_counts: torch.Tensor,
     positions: torch.Tensor,
+    send_displacements: torch.Tensor,
     send_hidden: torch.Tensor,
     send_ids: torch.Tensor,
     send_weights: torch.Tensor,
     ep_size: int,
     experts_per_rank: int,
     capacity: int,
+    packed: bool,
 ) -> None:
     return None
 
@@ -208,11 +266,59 @@ direct_register_custom_op(
     mutates_args=[
         "send_counts",
         "positions",
+        "send_displacements",
         "send_hidden",
         "send_ids",
         "send_weights",
     ],
     fake_impl=_ft_nccl_ep_pack_fake,
+)
+
+
+def _ft_nccl_ep_pack_combine(
+    local_contributions: torch.Tensor,
+    send_counts: torch.Tensor,
+    send_displacements: torch.Tensor,
+    packed: torch.Tensor,
+    ep_size: int,
+) -> None:
+    num_tokens = local_contributions.shape[0] // ep_size
+    hidden_size = local_contributions.shape[1]
+    _ft_nccl_ep_prefix_displacements_kernel[(1,)](
+        send_counts,
+        send_displacements,
+        ep_size=ep_size,
+    )
+    block_size = min(triton.next_power_of_2(hidden_size), 256)
+    _ft_nccl_ep_pack_combine_kernel[
+        (ep_size, num_tokens, triton.cdiv(hidden_size, block_size))
+    ](
+        local_contributions,
+        send_counts,
+        send_displacements,
+        packed,
+        num_tokens=num_tokens,
+        hidden_size=hidden_size,
+        ep_size=ep_size,
+        BLOCK_SIZE=block_size,
+    )
+
+
+def _ft_nccl_ep_pack_combine_fake(
+    local_contributions: torch.Tensor,
+    send_counts: torch.Tensor,
+    send_displacements: torch.Tensor,
+    packed: torch.Tensor,
+    ep_size: int,
+) -> None:
+    return None
+
+
+direct_register_custom_op(
+    op_name="ft_nccl_ep_pack_combine",
+    op_func=_ft_nccl_ep_pack_combine,
+    mutates_args=["send_displacements", "packed"],
+    fake_impl=_ft_nccl_ep_pack_combine_fake,
 )
 
 
@@ -269,6 +375,7 @@ class FTNcclEPHandle:
         num_experts_per_token: int,
         input_dtype: torch.dtype,
         topk_weights_dtype: torch.dtype,
+        use_multi_a2av: bool = True,
     ) -> None:
         if num_global_experts % ep_size != 0:
             raise ValueError("ft_nccl_ep requires an equal, linear expert partition")
@@ -286,6 +393,18 @@ class FTNcclEPHandle:
         self.padding_expert = ep_rank * self.experts_per_rank
         self.input_dtype = input_dtype
         self.weights_dtype = topk_weights_dtype
+        self.use_multi_a2av = use_multi_a2av
+
+        if not use_multi_a2av:
+            from ft_collective import set_active_pg
+
+            set_active_pg(self.pg)
+            for method in ("_order_after_current", "_ft_work"):
+                if not hasattr(self.pg, method):
+                    raise RuntimeError(
+                        "ft_nccl_a2av requires an FTProcessGroup with "
+                        f"{method}() stream-ordering support"
+                    )
 
         # A token is sent at most once to each rank, even when several selected
         # experts reside there. The full top-k metadata lets the standard MoE
@@ -336,21 +455,45 @@ class FTNcclEPHandle:
             device=self.send_hidden.device,
         )
 
-        dispatch_row_bytes = [
-            token_hidden_size * input_dtype.itemsize,
-            num_experts_per_token * torch.int64.itemsize,
-            num_experts_per_token * topk_weights_dtype.itemsize,
-        ]
-        self.dispatch_workspace = self.pg.create_a2av_multi_workspace(
-            dispatch_row_bytes, max_num_tokens_per_rank
-        )
+        self.dispatch_workspace = None
+        if use_multi_a2av:
+            dispatch_row_bytes = [
+                token_hidden_size * input_dtype.itemsize,
+                num_experts_per_token * torch.int64.itemsize,
+                num_experts_per_token * topk_weights_dtype.itemsize,
+            ]
+            self.dispatch_workspace = self.pg.create_a2av_multi_workspace(
+                dispatch_row_bytes, max_num_tokens_per_rank
+            )
+        else:
+            self.single_recv_counts = torch.empty_like(self.send_counts)
+            self.single_returned_counts = torch.empty_like(self.send_counts)
 
         self.combine_send = self.pg.empty(
             max_recv_rows * token_hidden_size, dtype=input_dtype
         ).view(max_recv_rows, token_hidden_size)
         self.combine_recv_slots = torch.empty_like(self.recv_hidden_slots)
-        self.combine_workspace = self.pg.create_a2av_multi_workspace(
-            [token_hidden_size * input_dtype.itemsize], max_num_tokens_per_rank
+        self.combine_workspace = None
+        if use_multi_a2av:
+            self.combine_workspace = self.pg.create_a2av_multi_workspace(
+                [token_hidden_size * input_dtype.itemsize], max_num_tokens_per_rank
+            )
+
+    def _single_all_to_allv(
+        self,
+        send: torch.Tensor,
+        output: torch.Tensor,
+        send_counts: torch.Tensor,
+        recv_counts: torch.Tensor,
+    ) -> None:
+        row_size = send.shape[-1] if send.dim() > 1 else 1
+        torch.ops.ft_collective.alltoallv(
+            send,
+            output,
+            send_counts,
+            recv_counts,
+            self.max_tokens,
+            row_size,
         )
 
     def _check_status(self, operation: str) -> None:
@@ -398,12 +541,14 @@ class FTNcclEPHandle:
             topk_weights,
             self.send_counts,
             positions,
+            self.send_displacements,
             self.send_hidden,
             self.send_ids,
             self.send_weights,
             self.ep_size,
             self.experts_per_rank,
             self.max_tokens,
+            not self.use_multi_a2av,
         )
         for source in range(self.ep_size):
             slot = source * self.max_tokens
@@ -411,18 +556,41 @@ class FTNcclEPHandle:
             self.recv_ids_slots[slot:slot_end].fill_(self.padding_expert)
             self.recv_weights_slots[slot:slot_end].zero_()
 
-        work, device_recv_counts = self.pg.all_to_allv_multi(
-            [self.send_hidden, self.send_ids, self.send_weights],
-            [
+        if self.use_multi_a2av:
+            work, device_recv_counts = self.pg.all_to_allv_multi(
+                [self.send_hidden, self.send_ids, self.send_weights],
+                [
+                    self.recv_hidden_slots,
+                    self.recv_ids_slots,
+                    self.recv_weights_slots,
+                ],
+                self.send_counts,
+                self.dispatch_workspace,
+                self.send_displacements,
+            )
+            work.wait()
+        else:
+            self.pg._order_after_current()
+            self._single_all_to_allv(
+                self.send_hidden,
                 self.recv_hidden_slots,
-                self.recv_ids_slots,
+                self.send_counts,
+                self.single_recv_counts,
+            )
+            self._single_all_to_allv(
+                self.send_ids.view(torch.float32),
+                self.recv_ids_slots.view(torch.float32),
+                self.send_counts,
+                self.single_recv_counts,
+            )
+            self._single_all_to_allv(
+                self.send_weights,
                 self.recv_weights_slots,
-            ],
-            self.send_counts,
-            self.dispatch_workspace,
-            self.send_displacements,
-        )
-        work.wait()
+                self.send_counts,
+                self.single_recv_counts,
+            )
+            self.pg._ft_work().wait()
+            device_recv_counts = self.single_recv_counts
         self._check_status("dispatch")
 
         # Keep the routed shape fixed for a captured input shape. Padding rows
@@ -470,21 +638,39 @@ class FTNcclEPHandle:
         if output.shape != (route.num_input_tokens, self.hidden_size):
             raise ValueError("ft_nccl_ep output does not match the source tokens")
 
-        for destination in range(self.ep_size):
-            input_start = destination * route.num_input_tokens
-            input_end = input_start + route.num_input_tokens
-            slot = destination * self.max_tokens
-            self.combine_send[slot : slot + route.num_input_tokens].copy_(
-                local_contributions[input_start:input_end]
+        if self.use_multi_a2av:
+            for destination in range(self.ep_size):
+                input_start = destination * route.num_input_tokens
+                input_end = input_start + route.num_input_tokens
+                slot = destination * self.max_tokens
+                self.combine_send[slot : slot + route.num_input_tokens].copy_(
+                    local_contributions[input_start:input_end]
+                )
+            work, device_returned_counts = self.pg.all_to_allv_multi(
+                [self.combine_send],
+                [self.combine_recv_slots],
+                route.recv_counts,
+                self.combine_workspace,
+                self.send_displacements,
             )
-        work, device_returned_counts = self.pg.all_to_allv_multi(
-            [self.combine_send],
-            [self.combine_recv_slots],
-            route.recv_counts,
-            self.combine_workspace,
-            self.send_displacements,
-        )
-        work.wait()
+            work.wait()
+        else:
+            torch.ops.vllm.ft_nccl_ep_pack_combine(
+                local_contributions,
+                route.recv_counts,
+                self.send_displacements,
+                self.combine_send,
+                self.ep_size,
+            )
+            self.pg._order_after_current()
+            self._single_all_to_allv(
+                self.combine_send,
+                self.combine_recv_slots,
+                route.recv_counts,
+                self.single_returned_counts,
+            )
+            self.pg._ft_work().wait()
+            device_returned_counts = self.single_returned_counts
         self._check_status("combine")
         del device_returned_counts
         torch.ops.vllm.ft_nccl_ep_combine(

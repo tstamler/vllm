@@ -335,16 +335,33 @@ class _NixlEPBufferState:
 class FTNcclEPAll2AllManager(All2AllManagerBase):
     """Own FT NCCL workspaces used by the routed EP prepare/finalize path."""
 
-    def __init__(self, cpu_group, ft_process_group, tcp_store_group=None):
+    def __init__(
+        self,
+        cpu_group,
+        ft_process_group,
+        tcp_store_group=None,
+        *,
+        use_multi_a2av: bool = True,
+    ):
         super().__init__(cpu_group, tcp_store_group)
         if self.internode:
             raise ValueError("ft_nccl_ep currently supports only single-node EP")
-        if not hasattr(ft_process_group, "all_to_allv_multi"):
+        if use_multi_a2av and not hasattr(ft_process_group, "all_to_allv_multi"):
             raise RuntimeError(
                 "ft_nccl_ep requires an FTProcessGroup with all_to_allv_multi() support"
             )
+        if not use_multi_a2av and not hasattr(torch.ops.ft_collective, "alltoallv"):
+            raise RuntimeError(
+                "ft_nccl_a2av requires the opaque ft_collective::alltoallv op"
+            )
         self.ft_process_group = ft_process_group
+        self.use_multi_a2av = use_multi_a2av
         self._cache = Cache()
+        logger.info_once(
+            "Using FT NCCL %s all-to-allv dispatch/combine.",
+            "multi-buffer workspace" if use_multi_a2av else "single-buffer",
+            scope="global",
+        )
 
     def get_handle(self, kwargs):
         def create_handle(**handle_args):
@@ -356,6 +373,7 @@ class FTNcclEPAll2AllManager(All2AllManagerBase):
                 ft_process_group=self.ft_process_group,
                 ep_rank=self.rank,
                 ep_size=self.world_size,
+                use_multi_a2av=self.use_multi_a2av,
                 **handle_args,
             )
 

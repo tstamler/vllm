@@ -21,6 +21,7 @@ def _worker(
     world_size: int,
     master_port: int,
     use_cuda_graph: bool,
+    use_multi_a2av: bool,
     q: mp.Queue,
 ) -> None:
     try:
@@ -59,6 +60,7 @@ def _worker(
             num_experts_per_token=2,
             input_dtype=torch.bfloat16,
             topk_weights_dtype=torch.float32,
+            use_multi_a2av=use_multi_a2av,
         )
         hidden = (
             torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.bfloat16, device=device)
@@ -107,7 +109,12 @@ def _worker(
 @pytest.mark.skipif(not current_platform.is_cuda(), reason="ft_nccl_ep requires CUDA")
 @pytest.mark.skipif(envs.VLLM_TARGET_DEVICE != "cuda", reason="Only test on CUDA")
 @pytest.mark.parametrize("use_cuda_graph", [False, True], ids=["eager", "cuda_graph"])
-def test_ft_nccl_ep_backend_round_trip(use_cuda_graph: bool) -> None:
+@pytest.mark.parametrize(
+    "use_multi_a2av", [True, False], ids=["multi", "single_buffer"]
+)
+def test_ft_nccl_ep_backend_round_trip(
+    use_cuda_graph: bool, use_multi_a2av: bool
+) -> None:
     world_size = 2
     if torch.cuda.device_count() < world_size:
         pytest.skip("Not enough GPUs")
@@ -115,7 +122,7 @@ def test_ft_nccl_ep_backend_round_trip(use_cuda_graph: bool) -> None:
     q = mp.get_context("spawn").Queue()
     mp.spawn(
         _worker,
-        args=(world_size, get_open_port(), use_cuda_graph, q),
+        args=(world_size, get_open_port(), use_cuda_graph, use_multi_a2av, q),
         nprocs=world_size,
         join=True,
     )

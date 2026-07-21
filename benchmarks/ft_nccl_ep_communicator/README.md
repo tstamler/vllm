@@ -9,7 +9,8 @@ Default model and layout:
 - `TP=1`
 - `DP=8`
 - EP enabled via `--enable-expert-parallel`
-- EP backends: `allgather_reducescatter`, `nixl_ep`, and `ft_nccl_ep`
+- EP backends: `allgather_reducescatter`, `nixl_ep`, `ft_nccl_a2av`, and
+  `ft_nccl_ep`
 - The NIXL EP configuration uses the Ray data-parallel backend and enables
   elastic EP and EPLB, as required by its TCPStore-based rank-management
   interface.
@@ -47,6 +48,22 @@ Run only the routed FT NCCL backend:
 FT_NCCL_MAX_COUNT=134217728 \
 RESULT_DIR=bench-results-ft-communicator-ep-8gpu \
 benchmarks/ft_nccl_ep_communicator/run_all.sh ft-a2av
+```
+
+The two routed FT configurations differ only in how they invoke all-to-allv:
+
+- `ft-a2av-single` launches three independent single-buffer collectives for
+  dispatch and one for combine. It does not create application-level A2AV
+  workspaces.
+- `ft-a2av` launches one multi-buffer collective for dispatch and one for
+  combine using persistent workspaces.
+
+Run only the single-buffer comparison with:
+
+```bash
+FT_NCCL_MAX_COUNT=134217728 \
+RESULT_DIR=bench-results-ft-a2av-single-8gpu \
+benchmarks/ft_nccl_ep_communicator/run_all.sh ft-a2av-single
 ```
 
 The `ft_nccl_ep` PoC supports single-node, linear expert placement and

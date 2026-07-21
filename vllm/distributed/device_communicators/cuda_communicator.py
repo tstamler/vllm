@@ -170,13 +170,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 self.all2all_manager = NixlEPAll2AllManager(
                     self.cpu_group, tcp_store_group
                 )
-            elif self.all2all_backend == "ft_nccl_ep":
+            elif self.all2all_backend in ("ft_nccl_a2av", "ft_nccl_ep"):
                 from .all2all import FTNcclEPAll2AllManager
 
                 self.all2all_manager = FTNcclEPAll2AllManager(
                     self.cpu_group,
                     self._get_ft_process_group(),
                     tcp_store_group,
+                    use_multi_a2av=self.all2all_backend == "ft_nccl_ep",
                 )
             elif (
                 self.all2all_backend == "flashinfer_all2allv"
@@ -297,7 +298,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
     def _should_use_ft_nccl_ep_backend(self) -> bool:
         return (
-            self.all2all_backend == "ft_nccl_ep"
+            self.all2all_backend in ("ft_nccl_a2av", "ft_nccl_ep")
             and self._ft_group_kind() == "ep"
             and self.world_size > 1
             and current_platform.is_cuda()

@@ -18,7 +18,7 @@ fi
 if [[ $# -gt 0 ]]; then
   CONFIGS=("$@")
 else
-  CONFIGS=(ag-rs nixl-ep ft-ag-rs ft-a2av)
+  CONFIGS=(ag-rs nixl-ep ft-ag-rs ft-a2av-single ft-a2av)
 fi
 
 server_pid=""
@@ -73,9 +73,11 @@ server_script_for_config() {
     ag-rs) echo "$SCRIPT_DIR/serve_ag_rs.sh" ;;
     nixl-ep) echo "$SCRIPT_DIR/serve_nixl_ep.sh" ;;
     ft-ag-rs | ft-nccl-ep) echo "$SCRIPT_DIR/serve_ft_nccl_ep.sh" ;;
+    ft-a2av-single) echo "$SCRIPT_DIR/serve_ft_a2av_single.sh" ;;
     ft-a2av) echo "$SCRIPT_DIR/serve_ft_a2av.sh" ;;
     *)
-      echo "Unknown config '$1'. Expected ag-rs, nixl-ep, ft-ag-rs, or ft-a2av." >&2
+      echo "Unknown config '$1'. Expected ag-rs, nixl-ep, ft-ag-rs, " \
+        "ft-a2av-single, or ft-a2av." >&2
       return 1
       ;;
   esac
@@ -85,6 +87,7 @@ backend_for_config() {
   case "$1" in
     ag-rs | ft-ag-rs | ft-nccl-ep) echo "allgather_reducescatter" ;;
     nixl-ep) echo "nixl_ep" ;;
+    ft-a2av-single) echo "ft_nccl_a2av" ;;
     ft-a2av) echo "ft_nccl_ep" ;;
   esac
 }
@@ -109,6 +112,7 @@ write_backend_summary() {
     echo "== $config =="
     grep "Using .*all2all manager" "$server_log" || true
     grep "Using FT NCCL staged all_gatherv/reduce_scatterv" "$server_log" || true
+    grep "Using FT NCCL .* all-to-allv dispatch/combine" "$server_log" || true
     grep "routed FT NCCL A2AV" "$server_log" || true
     grep "FT NCCL communicator .*fallback" "$server_log" || true
     echo

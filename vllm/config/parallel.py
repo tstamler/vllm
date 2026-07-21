@@ -44,6 +44,7 @@ All2AllBackend = Literal[
     "deepep_low_latency",
     "mori",
     "nixl_ep",
+    "ft_nccl_a2av",
     "ft_nccl_ep",
     "allgather_reducescatter",
     "flashinfer_all2allv",  # temporary alias for flashinfer_nvlink_two_sided
@@ -180,6 +181,7 @@ class ParallelConfig:
     - "deepep_low_latency": Use deepep low-latency kernels
     - "mori": Use mori kernels
     - "nixl_ep": Use nixl-ep kernels
+    - "ft_nccl_a2av": Use separate FT NCCL all-to-allv collectives
     - "ft_nccl_ep": Use FT NCCL routed variable all-to-all collectives
     - "flashinfer_nvlink_two_sided": Use flashinfer two-sided kernels for mnnvl
     - "flashinfer_nvlink_one_sided": Use flashinfer high-throughput a2a kernels"""
@@ -625,6 +627,7 @@ class ParallelConfig:
                 "deepep_low_latency",
                 "mori",
                 "nixl_ep",
+                "ft_nccl_a2av",
                 "ft_nccl_ep",
             )
             and self.enable_expert_parallel
