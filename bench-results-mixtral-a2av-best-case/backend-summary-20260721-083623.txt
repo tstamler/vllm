@@ -1,0 +1,19 @@
+== ft-ag-rs ==
+(Worker pid=2139451) INFO 07-21 08:37:33 [cuda_communicator.py:204] Using AgRsAll2AllManager all2all manager.
+(Worker pid=2139451) INFO 07-21 08:37:28 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'dp:0'.
+(Worker pid=2139451) INFO 07-21 08:37:33 [cuda_communicator.py:135] Using FT NCCL staged all_gatherv/reduce_scatterv for group 'ep:0'.
+(Worker_DP0_EP0 pid=2139451) WARNING 07-21 08:38:46 [cuda_communicator.py:428] FT NCCL communicator all-gather fallback for group 'dp:0': dtype torch.int32 is not supported by FT NCCL all-gather.
+(Worker_DP0_EP0 pid=2139451) WARNING 07-21 08:38:48 [cuda_communicator.py:428] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 536870912 exceeds max_count 134217728.
+(Worker_DP0_EP0 pid=2139451) WARNING 07-21 08:39:44 [cuda_communicator.py:428] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 402661376 exceeds max_count 134217728.
+(Worker_DP0_EP0 pid=2139451) WARNING 07-21 08:42:47 [cuda_communicator.py:428] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 402657280 exceeds max_count 134217728.
+(Worker_DP0_EP0 pid=2139451) WARNING 07-21 08:42:53 [cuda_communicator.py:428] FT NCCL communicator all-reduce fallback for group 'dp:0': numel 183713792 exceeds max_count 134217728.
+
+== ft-a2av-single ==
+(Worker pid=2169628) INFO 07-21 08:43:59 [cuda_communicator.py:204] Using FTNcclEPAll2AllManager all2all manager.
+(Worker pid=2169628) INFO 07-21 08:43:59 [all2all.py:360] Using FT NCCL single-buffer all-to-allv dispatch/combine.
+
+== ft-a2av ==
+(Worker pid=2212429) INFO 07-21 08:53:48 [cuda_communicator.py:204] Using FTNcclEPAll2AllManager all2all manager.
+(Worker pid=2212429) INFO 07-21 08:53:48 [all2all.py:360] Using FT NCCL multi-buffer workspace all-to-allv dispatch/combine.
+Starting routed FT NCCL A2AV EP server: model=mistralai/Mixtral-8x7B-Instruct-v0.1 tp=1 dp=8
+
