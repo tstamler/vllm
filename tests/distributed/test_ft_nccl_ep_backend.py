@@ -48,7 +48,7 @@ def _worker(
         )
         pg = get_ft_process_group(local_rank) or get_ft_process_group()
         assert pg is not None
-        pg.pre_sync()
+        pg.ft_converge()
 
         handle = FTNcclEPHandle(
             ft_process_group=pg,

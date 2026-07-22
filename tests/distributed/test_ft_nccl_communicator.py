@@ -6,6 +6,7 @@ import typing
 
 import pytest
 import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import vllm.envs as envs
@@ -22,6 +23,138 @@ from vllm.utils.network_utils import get_open_port
 from vllm.utils.system_utils import update_environment_variables
 
 TEST_SIZE_ELEMENTS = 1024
+
+
+def ft_nccl_ep_communicator_worker(
+    local_rank: int,
+    world_size: int,
+    master_port: int,
+    q: mp.Queue,
+):
+    monkeypatch = pytest.MonkeyPatch()
+    with monkeypatch.context() as m:
+        try:
+            import ft_collective  # noqa: F401
+        except ImportError:
+            q.put("ft_collective is not importable.")
+            return
+
+        m.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        m.setenv("VLLM_USE_FT_NCCL_COMMUNICATOR", "0")
+        m.setenv("VLLM_USE_FT_NCCL_EP", "1")
+        m.setenv("VLLM_DISABLE_PYNCCL", "0")
+        m.setenv("FT_NCCL_MAX_COUNT", "2048")
+        m.setenv("NCCL_NVLS_ENABLE", "1")
+        m.setenv("NCCL_CUMEM_ENABLE", "1")
+
+        dtype = torch.float32
+        device = torch.device(f"cuda:{local_rank}")
+        torch.accelerator.set_device_index(device)
+        torch.set_default_device(device)
+        torch.set_default_dtype(dtype)
+        update_environment_variables(
+            {
+                "RANK": str(local_rank),
+                "LOCAL_RANK": str(local_rank),
+                "WORLD_SIZE": str(world_size),
+                "MASTER_ADDR": "localhost",
+                "MASTER_PORT": str(master_port),
+            }
+        )
+
+        cuda_communicator = None
+        try:
+            init_distributed_environment()
+            cuda_communicator = CudaCommunicator(
+                cpu_group=dist.group.WORLD,
+                device=device,
+                device_group=dist.group.WORLD,
+                unique_name="dp:0",
+            )
+
+            sizes = [1, 3]
+            local_size = sizes[local_rank]
+            float_input = torch.full(
+                (local_size, 4),
+                local_rank + 1,
+                dtype=dtype,
+                device=device,
+            )
+            int_input = torch.full(
+                (local_size, 2),
+                local_rank + 10,
+                dtype=torch.int64,
+                device=device,
+            )
+
+            gathered_float, gathered_int = cuda_communicator.all_gatherv(
+                [float_input, int_input],
+                dim=0,
+                sizes=sizes,
+            )
+            expected_float = torch.cat(
+                [
+                    torch.full(
+                        (sizes[rank], 4),
+                        rank + 1,
+                        dtype=dtype,
+                        device=device,
+                    )
+                    for rank in range(world_size)
+                ],
+                dim=0,
+            )
+            expected_int = torch.cat(
+                [
+                    torch.full(
+                        (sizes[rank], 2),
+                        rank + 10,
+                        dtype=torch.int64,
+                        device=device,
+                    )
+                    for rank in range(world_size)
+                ],
+                dim=0,
+            )
+            torch.testing.assert_close(gathered_float, expected_float)
+            torch.testing.assert_close(gathered_int, expected_int)
+
+            reduce_input = torch.full(
+                (sum(sizes), 4),
+                local_rank + 1,
+                dtype=dtype,
+                device=device,
+            )
+            reduced = cuda_communicator.reduce_scatterv(
+                reduce_input,
+                dim=0,
+                sizes=sizes,
+            )
+            expected_reduced = torch.full(
+                (local_size, 4),
+                world_size * (world_size + 1) / 2,
+                dtype=dtype,
+                device=device,
+            )
+            torch.testing.assert_close(reduced, expected_reduced)
+
+            ft_process_group = cuda_communicator._ft_process_group
+            if ft_process_group is None:
+                q.put("FT NCCL EP communicator path did not initialize.")
+                return
+            windows = getattr(ft_process_group, "_windows", {})
+            assert len(cuda_communicator._ft_staging_workspaces) == 2
+            for workspace in cuda_communicator._ft_staging_workspaces.values():
+                assert workspace.data_ptr() in windows
+        except RuntimeError as e:
+            if "requires an FTProcessGroup with empty()" in str(e):
+                q.put(str(e))
+                return
+            raise
+        finally:
+            if cuda_communicator is not None:
+                cuda_communicator.destroy()
+            cleanup_dist_env_and_memory()
 
 
 def _run_cuda_graph_replay_test(
@@ -154,9 +287,7 @@ def ft_nccl_communicator_worker(
                 dtype=dtype,
                 device=device,
             )
-            gather_dim0_output = cuda_communicator.all_gather(
-                gather_dim0_input, dim=0
-            )
+            gather_dim0_output = cuda_communicator.all_gather(gather_dim0_input, dim=0)
             expected_gather_dim0 = torch.cat(
                 [
                     torch.full_like(gather_dim0_input, rank + 1)
@@ -188,9 +319,7 @@ def ft_nccl_communicator_worker(
 
             assert gather_last_dim_input.data_ptr() not in windows
             assert gather_last_dim_output.shape == expected_gather_last_dim.shape
-            torch.testing.assert_close(
-                gather_last_dim_output, expected_gather_last_dim
-            )
+            torch.testing.assert_close(gather_last_dim_output, expected_gather_last_dim)
             assert len(cuda_communicator._ft_staging_workspaces) == 1
 
             if run_cuda_graph_test:
@@ -231,6 +360,27 @@ def _run_ft_nccl_communicator_test(run_cuda_graph_test: bool) -> None:
             pytest.skip(val)
 
 
+def _run_ft_nccl_ep_communicator_test() -> None:
+    world_size = 2
+    if world_size > torch.accelerator.device_count():
+        pytest.skip("Not enough GPUs to run the test.")
+
+    q = mp.get_context("spawn").Queue()
+    mp.spawn(
+        ft_nccl_ep_communicator_worker,
+        args=(world_size, get_open_port(), q),
+        nprocs=world_size,
+    )
+    try:
+        val = q.get(timeout=1)
+    except queue.Empty:
+        val = None
+    finally:
+        cleanup_dist_env_and_memory()
+        if val is not None:
+            pytest.skip(val)
+
+
 @pytest.mark.skipif(
     not current_platform.is_cuda(),
     reason="ft_nccl communicator smoke test is only available on CUDA.",
@@ -247,3 +397,12 @@ def test_ft_nccl_communicator_staging_smoke():
 @pytest.mark.skipif(envs.VLLM_TARGET_DEVICE not in ["cuda"], reason="Only test on CUDA")
 def test_ft_nccl_communicator_cuda_graph_replay():
     _run_ft_nccl_communicator_test(run_cuda_graph_test=True)
+
+
+@pytest.mark.skipif(
+    not current_platform.is_cuda(),
+    reason="ft_nccl communicator EP smoke test is only available on CUDA.",
+)
+@pytest.mark.skipif(envs.VLLM_TARGET_DEVICE not in ["cuda"], reason="Only test on CUDA")
+def test_ft_nccl_communicator_ep_ag_rs_smoke():
+    _run_ft_nccl_ep_communicator_test()

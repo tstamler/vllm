@@ -111,7 +111,7 @@ write_backend_summary() {
   {
     echo "== $config =="
     grep "Using .*all2all manager" "$server_log" || true
-    grep "Using FT NCCL staged all_gatherv/reduce_scatterv" "$server_log" || true
+    grep "Using FT NCCL .*all_gatherv/reduce_scatterv" "$server_log" || true
     grep "Using FT NCCL .* all-to-allv dispatch/combine" "$server_log" || true
     grep "routed FT NCCL A2AV" "$server_log" || true
     grep "FT NCCL communicator .*fallback" "$server_log" || true

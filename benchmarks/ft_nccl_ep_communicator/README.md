@@ -1,6 +1,6 @@
 # FT NCCL EP Communicator Benchmark
 
-This benchmark compares dense Ag/Rs, NIXL EP, the FT NCCL staged Ag/Rs path,
+This benchmark compares dense Ag/Rs, NIXL EP, the FT NCCL native Ag/Rs path,
 and the standalone routed FT NCCL all-to-allv EP backend.
 
 Default model and layout:
