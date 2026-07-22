@@ -1,0 +1,15 @@
+== ag-rs ==
+(Worker pid=141358) INFO 07-22 12:04:25 [cuda_communicator.py:211] Using AgRsAll2AllManager all2all manager.
+
+== ft-a2av-single ==
+(Worker pid=161558) INFO 07-22 12:09:55 [cuda_communicator.py:211] Using FTNcclEPAll2AllManager all2all manager.
+(Worker pid=161558) INFO 07-22 12:09:55 [all2all.py:360] Using FT NCCL single-buffer all-to-allv dispatch/combine.
+
+== ft-a2av ==
+(Worker pid=190634) INFO 07-22 12:17:49 [cuda_communicator.py:211] Using FTNcclEPAll2AllManager all2all manager.
+(Worker pid=190634) INFO 07-22 12:17:49 [all2all.py:360] Using FT NCCL multi-buffer workspace all-to-allv dispatch/combine.
+Starting routed FT NCCL A2AV EP server: model=deepseek-ai/DeepSeek-V2-Lite-Chat tp=1 dp=8
+
+== nixl-ep ==
+(APIServer pid=210407) [36m(RayWorkerProc pid=232605)[0m (Worker pid=232605) INFO 07-22 12:25:21 [cuda_communicator.py:211] Using NixlEPAll2AllManager all2all manager.
+

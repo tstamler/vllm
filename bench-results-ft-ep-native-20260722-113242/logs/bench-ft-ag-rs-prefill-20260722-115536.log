@@ -1,0 +1,65 @@
+Writing benchmark result to bench-results-ft-ep-native-20260722-113242/ft-ag-rs-prefill-20260722-120158.json
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7ff8b17485e0>, trust_remote_code=False, seed=0, num_prompts=1024, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=256, model='deepseek-ai/DeepSeek-V2-Lite-Chat', input_len=2048, output_len=128, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=128, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=['config=ft-ag-rs', 'workload=prefill', 'tp=1', 'dp=8', 'model=deepseek-ai/DeepSeek-V2-Lite-Chat', 'dtype=bfloat16', 'max_model_len=4096', 'max_num_batched_tokens=4096', 'all2all_backend=allgather_reducescatter'], result_dir='bench-results-ft-ep-native-20260722-113242', result_filename='ft-ag-rs-prefill-20260722-120158.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-f021c017-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=1800, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 07-22 12:02:08 [utils.py:90] Sampling input_len from [2048, 2048] and output_len from [128, 128]
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Waiting for endpoint to become up in 1800 seconds
+ |          | 00:00 elapsed, ? remaining |          | 00:00 elapsed, 00:32 remaining |          | 00:06 elapsed, 4686:05:36 remaining
+Initial test run completed.
+Warming up with 128 requests...
+  0%|          | 0/128 [00:00<?, ?it/s]  1%|          | 1/128 [00:06<13:11,  6.23s/it] 43%|████▎     | 55/128 [00:06<00:05, 12.18it/s]100%|██████████| 128/128 [00:06<00:00, 19.99it/s]
+Warmup run completed.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 256
+  0%|          | 0/1024 [00:00<?, ?it/s]  0%|          | 1/1024 [00:00<14:42,  1.16it/s] 17%|█▋        | 174/1024 [00:00<00:03, 242.20it/s] 42%|████▏     | 425/1024 [00:01<00:00, 616.30it/s] 66%|██████▌   | 677/1024 [00:01<00:00, 959.62it/s] 84%|████████▍ | 864/1024 [00:11<00:03, 49.35it/s] 100%|██████████| 1024/1024 [00:11<00:00, 85.81it/s]
+Failed requests during benchmark run detected (capping to 10):
+Error 0: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 1: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 2: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 3: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 4: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 5: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 6: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 7: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 8: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+Error 9: Never received a valid chunk to calculate TTFT.This response will be marked as failed!
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     5         
+Failed requests:                         1019      
+Maximum request concurrency:             256       
+Benchmark duration (s):                  11.93     
+Total input tokens:                      10240     
+Total generated tokens:                  5         
+Request throughput (req/s):              0.42      
+Output token throughput (tok/s):         0.42      
+Peak output token throughput (tok/s):    5.00      
+Peak concurrent requests:                5.00      
+Total token throughput (tok/s):          858.56    
+---------------Time to First Token----------------
+Mean TTFT (ms):                          570.43    
+Median TTFT (ms):                        573.05    
+P99 TTFT (ms):                           573.43    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          0.00      
+Median TPOT (ms):                        0.00      
+P99 TPOT (ms):                           0.00      
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           0.00      
+Median ITL (ms):                         0.00      
+P99 ITL (ms):                            0.00      
+==================================================
