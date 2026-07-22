@@ -50,7 +50,6 @@ def ft_nccl_ep_communicator_worker(
         dtype = torch.float32
         device = torch.device(f"cuda:{local_rank}")
         torch.accelerator.set_device_index(device)
-        torch.set_default_device(device)
         torch.set_default_dtype(dtype)
         update_environment_variables(
             {
@@ -231,7 +230,6 @@ def ft_nccl_communicator_worker(
         dtype = torch.float32
         device = torch.device(f"cuda:{local_rank}")
         torch.accelerator.set_device_index(device)
-        torch.set_default_device(device)
         torch.set_default_dtype(dtype)
         update_environment_variables(
             {
