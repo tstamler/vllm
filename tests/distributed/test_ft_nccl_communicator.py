@@ -6,7 +6,6 @@ import typing
 
 import pytest
 import torch
-import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import vllm.envs as envs
@@ -15,6 +14,7 @@ from vllm.distributed import cleanup_dist_env_and_memory
 from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
 from vllm.distributed.parallel_state import (
     get_tp_group,
+    get_world_group,
     init_distributed_environment,
     initialize_model_parallel,
 )
@@ -65,10 +65,11 @@ def ft_nccl_ep_communicator_worker(
         cuda_communicator = None
         try:
             init_distributed_environment()
+            world_group = get_world_group()
             cuda_communicator = CudaCommunicator(
-                cpu_group=dist.group.WORLD,
+                cpu_group=world_group.cpu_group,
                 device=device,
-                device_group=dist.group.WORLD,
+                device_group=world_group.device_group,
                 unique_name="dp:0",
             )
 
