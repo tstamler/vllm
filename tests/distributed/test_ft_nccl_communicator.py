@@ -118,6 +118,12 @@ def ft_nccl_ep_communicator_worker(
             )
             torch.testing.assert_close(gathered_float, expected_float)
             torch.testing.assert_close(gathered_int, expected_int)
+            assert len(cuda_communicator._ft_all_gatherv_send_counts) == 1
+            device_send_counts = next(
+                iter(cuda_communicator._ft_all_gatherv_send_counts.values())
+            )
+            assert device_send_counts.is_cuda
+            assert device_send_counts.dtype == torch.int32
 
             reduce_input = torch.full(
                 (sum(sizes), 4),

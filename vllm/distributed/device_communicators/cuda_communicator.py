@@ -101,6 +101,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_staging_workspaces: dict[
             tuple[torch.dtype, str, int | None], torch.Tensor
         ] = {}
+        self._ft_all_gatherv_send_counts: dict[
+            tuple[str, int | None, int], torch.Tensor
+        ] = {}
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -681,11 +684,21 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 input_.reshape(local_size, row_width),
                 ft_process_group,
             )
+        count_key = (input_.device.type, input_.device.index, local_size)
+        device_send_counts = self._ft_all_gatherv_send_counts.get(count_key)
+        if device_send_counts is None:
+            device_send_counts = torch.full(
+                (self.world_size,),
+                local_size,
+                dtype=torch.int32,
+                device=input_.device,
+            )
+            self._ft_all_gatherv_send_counts[count_key] = device_send_counts
         output = torch.empty(output_shape, dtype=input_.dtype, device=input_.device)
         work, _ = ft_process_group.all_gatherv(
             staging,
             output.view(sum(sizes), row_width),
-            local_size,
+            device_send_counts,
             max_size,
         )
         work.wait()
@@ -915,6 +928,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
     def destroy(self):
         self._ft_staging_workspaces.clear()
+        self._ft_all_gatherv_send_counts.clear()
         self._ft_external_stream = None
         self._ft_process_group = None
         if self._ft_torch_group is not None:
