@@ -687,13 +687,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
         count_key = (input_.device.type, input_.device.index, local_size)
         device_send_counts = self._ft_all_gatherv_send_counts.get(count_key)
         if device_send_counts is None:
-            device_send_counts = torch.full(
+            device_send_counts = torch.empty(
                 (self.world_size,),
-                local_size,
                 dtype=torch.int32,
                 device=input_.device,
             )
             self._ft_all_gatherv_send_counts[count_key] = device_send_counts
+        # Record count initialization in every CUDA graph that uses this cache.
+        device_send_counts.fill_(local_size)
         output = torch.empty(output_shape, dtype=input_.dtype, device=input_.device)
         work, _ = ft_process_group.all_gatherv(
             staging,
