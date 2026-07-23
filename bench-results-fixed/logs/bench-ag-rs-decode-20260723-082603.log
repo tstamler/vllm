@@ -1,0 +1,70 @@
+Writing benchmark result to bench-results-fixed/ag-rs-decode-20260723-082606.json
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7ff8f18385e0>, trust_remote_code=False, seed=0, num_prompts=1024, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=256, model='deepseek-ai/DeepSeek-V2-Lite-Chat', input_len=128, output_len=1024, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=128, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=['config=ag-rs', 'workload=decode', 'tp=1', 'dp=8', 'model=deepseek-ai/DeepSeek-V2-Lite-Chat', 'dtype=bfloat16', 'max_model_len=4096', 'max_num_batched_tokens=4096', 'all2all_backend=allgather_reducescatter'], result_dir='bench-results-fixed', result_filename='ag-rs-decode-20260723-082606.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-c073da0a-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=1800, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 07-23 08:26:16 [utils.py:90] Sampling input_len from [128, 128] and output_len from [1024, 1024]
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Waiting for endpoint to become up in 1800 seconds
+ |          | 00:00 elapsed, ? remaining |          | 00:00 elapsed, 00:28 remainingWARNING 07-23 08:26:17 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |          | 00:05 elapsed, 29:54 remaining |          | 00:05 elapsed, 29:54 remainingWARNING 07-23 08:26:22 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |          | 00:10 elapsed, 29:49 remaining |          | 00:10 elapsed, 29:49 remainingWARNING 07-23 08:26:27 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |          | 00:15 elapsed, 29:44 remaining |          | 00:15 elapsed, 29:44 remainingWARNING 07-23 08:26:32 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |          | 00:20 elapsed, 29:39 remaining |          | 00:20 elapsed, 29:39 remainingWARNING 07-23 08:26:37 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▏         | 00:25 elapsed, 29:34 remaining |▏         | 00:25 elapsed, 29:34 remainingWARNING 07-23 08:26:42 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▏         | 00:30 elapsed, 29:29 remaining |▏         | 00:30 elapsed, 29:29 remainingWARNING 07-23 08:26:47 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▏         | 00:35 elapsed, 29:24 remaining |▏         | 00:35 elapsed, 29:24 remainingWARNING 07-23 08:26:52 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▏         | 00:40 elapsed, 29:19 remaining |▏         | 00:40 elapsed, 29:19 remainingWARNING 07-23 08:26:57 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▎         | 00:45 elapsed, 29:14 remaining |▎         | 00:45 elapsed, 29:14 remainingWARNING 07-23 08:27:02 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▎         | 00:50 elapsed, 29:09 remaining |▎         | 00:50 elapsed, 29:09 remainingWARNING 07-23 08:27:07 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▎         | 00:55 elapsed, 29:04 remaining |▎         | 00:55 elapsed, 29:04 remainingWARNING 07-23 08:27:12 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▎         | 01:00 elapsed, 28:59 remaining |▎         | 01:00 elapsed, 28:59 remainingWARNING 07-23 08:27:17 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▎         | 01:05 elapsed, 28:54 remaining |▎         | 01:05 elapsed, 28:54 remainingWARNING 07-23 08:27:22 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▍         | 01:10 elapsed, 28:49 remaining |▍         | 01:10 elapsed, 28:49 remainingWARNING 07-23 08:27:27 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▍         | 01:15 elapsed, 28:44 remaining |▍         | 01:15 elapsed, 28:44 remainingWARNING 07-23 08:27:32 [ready_checker.py:70] Endpoint is not ready. Error='aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]'
+ |▍         | 01:20 elapsed, 28:39 remaining |▍         | 01:20 elapsed, 28:39 remaining |▍         | 01:25 elapsed, 30:39 remaining
+Initial test run completed.
+Warming up with 128 requests...
+  0%|          | 0/128 [00:00<?, ?it/s]  1%|          | 1/128 [00:16<34:03, 16.09s/it] 22%|██▏       | 28/128 [00:16<00:41,  2.44it/s]100%|██████████| 128/128 [00:16<00:00,  7.89it/s]
+Warmup run completed.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 256
+  0%|          | 0/1024 [00:00<?, ?it/s]  0%|          | 1/1024 [00:26<7:30:34, 26.43s/it]  1%|          | 6/1024 [00:26<55:35,  3.28s/it]    2%|▏         | 24/1024 [00:26<10:01,  1.66it/s] 25%|██▌       | 256/1024 [00:38<07:41,  1.66it/s] 25%|██▌       | 257/1024 [00:54<01:53,  6.77it/s] 26%|██▌       | 262/1024 [00:54<01:50,  6.92it/s] 27%|██▋       | 280/1024 [00:54<01:34,  7.85it/s] 39%|███▉      | 398/1024 [00:54<00:36, 16.94it/s] 50%|█████     | 512/1024 [01:08<00:30, 16.94it/s] 50%|█████     | 513/1024 [01:21<01:09,  7.36it/s] 51%|█████     | 518/1024 [01:22<01:07,  7.51it/s] 53%|█████▎    | 547/1024 [01:22<00:52,  9.03it/s] 63%|██████▎   | 642/1024 [01:22<00:23, 16.39it/s] 75%|███████▌  | 768/1024 [01:38<00:15, 16.39it/s] 75%|███████▌  | 769/1024 [01:49<00:33,  7.65it/s] 76%|███████▌  | 774/1024 [01:49<00:32,  7.81it/s] 79%|███████▉  | 807/1024 [01:49<00:22,  9.60it/s]100%|██████████| 1024/1024 [01:49<00:00,  9.34it/s]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     1024      
+Failed requests:                         0         
+Maximum request concurrency:             256       
+Benchmark duration (s):                  109.63    
+Total input tokens:                      131072    
+Total generated tokens:                  1048576   
+Request throughput (req/s):              9.34      
+Output token throughput (tok/s):         9565.09   
+Peak output token throughput (tok/s):    17099.00  
+Peak concurrent requests:                512.00    
+Total token throughput (tok/s):          10760.72  
+---------------Time to First Token----------------
+Mean TTFT (ms):                          339.09    
+Median TTFT (ms):                        350.12    
+P99 TTFT (ms):                           567.77    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          26.44     
+Median TPOT (ms):                        26.62     
+P99 TPOT (ms):                           27.03     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           26.44     
+Median ITL (ms):                         26.25     
+P99 ITL (ms):                            39.52     
+==================================================
