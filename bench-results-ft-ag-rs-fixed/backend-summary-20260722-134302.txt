@@ -1,5 +1,0 @@
-== ft-ag-rs ==
-(Worker pid=302366) INFO 07-22 13:44:06 [cuda_communicator.py:211] Using AgRsAll2AllManager all2all manager.
-(Worker pid=302366) INFO 07-22 13:44:01 [cuda_communicator.py:141] Using FT NCCL native all_gatherv/reduce_scatterv with symmetric staging for group 'dp:0'.
-(Worker pid=302366) INFO 07-22 13:44:06 [cuda_communicator.py:141] Using FT NCCL native all_gatherv/reduce_scatterv with symmetric staging for group 'ep:0'.
-
