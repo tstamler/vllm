@@ -65,6 +65,12 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
 
 logger = init_logger(__name__)
 
+_FT_DEAD_WORKER_POLL_SECONDS = 0.5
+
+
+class WorkerDiedError(RuntimeError):
+    pass
+
 
 class FutureWrapper(Future):
     def __init__(
@@ -112,6 +118,20 @@ class MultiprocExecutor(Executor):
         self._finalizer = weakref.finalize(self, self.shutdown)
         self.is_failed = False
         self.failure_callback: FailureCallback | None = None
+        self._dead_worker_ranks: set[int] = set()
+        self._ft_tolerate_worker_death = envs.VLLM_FT_SURVIVE_WORKER_FAILURE
+
+        if self._ft_tolerate_worker_death:
+            if not envs.VLLM_USE_FT_NCCL_COMMUNICATOR:
+                raise RuntimeError(
+                    "VLLM_FT_SURVIVE_WORKER_FAILURE=1 requires "
+                    "VLLM_USE_FT_NCCL_COMMUNICATOR=1."
+                )
+            if self.parallel_config.nnodes_within_dp != 1:
+                raise RuntimeError(
+                    "VLLM_FT_SURVIVE_WORKER_FAILURE currently supports only "
+                    "single-node DP engines."
+                )
 
         tp_size, pp_size, pcp_size = self._get_parallel_sizes()
         assert self.world_size == tp_size * pp_size * pcp_size, (
@@ -273,21 +293,34 @@ class MultiprocExecutor(Executor):
         # callback to inform the engine.
         def monitor_workers():
             sentinels = [h.proc.sentinel for h in workers]
-            died = multiprocessing.connection.wait(sentinels)
-            _self = self_ref()
-            if not _self or getattr(_self, "shutting_down", False):
-                logger.debug("MultiprocWorkerMonitor: shutdown already initiated")
+            by_sentinel = {h.proc.sentinel: (i, h) for i, h in enumerate(workers)}
+            while sentinels:
+                died = multiprocessing.connection.wait(sentinels)
+                _self = self_ref()
+                if not _self or getattr(_self, "shutting_down", False):
+                    logger.debug("MultiprocWorkerMonitor: shutdown already initiated")
+                    return
+
+                dead = [by_sentinel[sentinel] for sentinel in died]
+                dead_count = len(_self._dead_worker_ranks) + len(dead)
+                if _self._ft_tolerate_worker_death and dead_count < len(workers):
+                    for local_idx, handle in dead:
+                        _self._mark_worker_dead(local_idx, handle)
+                        sentinels.remove(handle.proc.sentinel)
+                    continue
+
+                _self.is_failed = True
+                proc_name = dead[0][1].proc.name if dead else "<unknown>"
+                logger.error(
+                    "Worker proc %s died unexpectedly, shutting down executor.",
+                    proc_name,
+                )
+                _self.shutdown()
+                callback = _self.failure_callback
+                if callback is not None:
+                    _self.failure_callback = None
+                    callback()
                 return
-            _self.is_failed = True
-            proc_name = next(h.proc.name for h in workers if h.proc.sentinel == died[0])
-            logger.error(
-                "Worker proc %s died unexpectedly, shutting down executor.", proc_name
-            )
-            _self.shutdown()
-            callback = _self.failure_callback
-            if callback is not None:
-                _self.failure_callback = None
-                callback()
 
         if not inline:
             Thread(
@@ -296,6 +329,22 @@ class MultiprocExecutor(Executor):
             return
 
         monitor_workers()
+
+    def _mark_worker_dead(self, local_idx: int, handle: "WorkerProcHandle") -> None:
+        if local_idx in self._dead_worker_ranks:
+            return
+        self._dead_worker_ranks.add(local_idx)
+        logger.warning(
+            "FT NCCL worker %d (%s) died; keeping this DP engine alive in a "
+            "withdrawn state.",
+            local_idx,
+            handle.proc.name,
+        )
+        if self.rpc_broadcast_mq is not None:
+            self.rpc_broadcast_mq.mark_reader_dead(local_idx)
+
+    def has_dead_workers(self) -> bool:
+        return bool(self._dead_worker_ranks)
 
     def register_failure_callback(self, callback: FailureCallback):
         if self.is_failed:
@@ -370,22 +419,58 @@ class MultiprocExecutor(Executor):
             send_method = method
         else:
             send_method = cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
+
+        if output_rank is not None and output_rank in self._dead_worker_ranks:
+            output_rank = next(
+                rank
+                for rank in range(len(self.response_mqs))
+                if rank not in self._dead_worker_ranks
+            )
         self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
 
-        response_mqs: Sequence[MessageQueue] = self.response_mqs
+        response_mqs: Sequence[tuple[int, MessageQueue]] = list(
+            enumerate(self.response_mqs)
+        )
         if output_rank is not None:
-            response_mqs = (response_mqs[output_rank],)
+            response_mqs = ((output_rank, self.response_mqs[output_rank]),)
+        elif self._dead_worker_ranks:
+            response_mqs = tuple(
+                (rank, mq)
+                for rank, mq in response_mqs
+                if rank not in self._dead_worker_ranks
+            )
 
         def get_response():
             responses = []
-            for mq in response_mqs:
-                dequeue_timeout = (
-                    None if deadline is None else (deadline - time.monotonic())
-                )
-                try:
-                    status, result = mq.dequeue(timeout=dequeue_timeout)
-                except TimeoutError as e:
-                    raise TimeoutError(f"RPC call to {method} timed out.") from e
+            for rank, mq in response_mqs:
+                while True:
+                    if rank in self._dead_worker_ranks:
+                        raise WorkerDiedError(
+                            f"Worker {rank} died during RPC call to {method}."
+                        )
+                    remaining = (
+                        None if deadline is None else deadline - time.monotonic()
+                    )
+                    if remaining is not None and remaining <= 0:
+                        raise TimeoutError(f"RPC call to {method} timed out.")
+                    dequeue_timeout = remaining
+                    if self._ft_tolerate_worker_death:
+                        dequeue_timeout = min(
+                            remaining or _FT_DEAD_WORKER_POLL_SECONDS,
+                            _FT_DEAD_WORKER_POLL_SECONDS,
+                        )
+                    try:
+                        status, result = mq.dequeue(timeout=dequeue_timeout)
+                        break
+                    except TimeoutError as e:
+                        if not self._ft_tolerate_worker_death:
+                            raise TimeoutError(
+                                f"RPC call to {method} timed out."
+                            ) from e
+                        if deadline is not None and time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"RPC call to {method} timed out."
+                            ) from e
                 if status != WorkerProc.ResponseStatus.SUCCESS:
                     raise RuntimeError(
                         f"Worker failed with error '{result}', please check the"

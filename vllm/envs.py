@@ -113,6 +113,7 @@ if TYPE_CHECKING:
     VLLM_DISABLE_PYNCCL: bool = False
     VLLM_USE_FT_NCCL_COMMUNICATOR: bool = False
     VLLM_USE_FT_NCCL_EP: bool = False
+    VLLM_FT_SURVIVE_WORKER_FAILURE: bool = False
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
@@ -1089,6 +1090,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_USE_FT_NCCL_EP": lambda: (
         os.getenv("VLLM_USE_FT_NCCL_EP", "False").lower() in ("true", "1", "yes", "on")
+    ),
+    "VLLM_FT_SURVIVE_WORKER_FAILURE": lambda: (
+        os.getenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "False").lower()
+        in ("true", "1", "yes", "on")
     ),
     # Optional: enable external Oink custom ops (e.g., Blackwell RMSNorm).
     # Disabled by default.

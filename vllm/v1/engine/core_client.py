@@ -35,10 +35,12 @@ from vllm.utils.network_utils import (
 from vllm.v1.engine import (
     EEP_NOTIFICATION_CALL_ID,
     EEPNotificationType,
+    EngineCoreOutput,
     EngineCoreOutputs,
     EngineCoreReadyResponse,
     EngineCoreRequest,
     EngineCoreRequestType,
+    FinishReason,
     PauseMode,
     ReconfigureDistributedRequest,
     ReconfigureRankType,
@@ -1306,9 +1308,21 @@ class DPAsyncMPClient(AsyncMPClient):
                         continue
 
                     # Update local load-balancing state.
-                    counts, wave, running = msgspec.msgpack.decode(buf)
+                    decoded = msgspec.msgpack.decode(buf)
+                    counts, wave, running = decoded[:3]
                     self.current_wave = wave
                     self.engines_running = running
+                    degraded = decoded[3] if len(decoded) > 3 else ()
+                    if degraded and isinstance(self, DPLBAsyncMPClient):
+                        for engine_index in degraded:
+                            if engine_index not in self.dead_engine_indices:
+                                self.dead_engine_indices.add(engine_index)
+                                logger.warning(
+                                    "DP engine %d is degraded; routing future "
+                                    "requests to surviving engines.",
+                                    engine_index,
+                                )
+                                self._abort_in_flight_for_dead_engine(engine_index)
                     if counts is not None:
                         # Running and waiting counts are global from the
                         # Coordinator including all EngineCores. Slice to get
@@ -1363,6 +1377,7 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
 
         # To route aborts to the correct engine.
         self.reqs_in_flight: dict[str, EngineIdentity] = {}
+        self.dead_engine_indices: set[int] = set()
 
         super().__init__(
             vllm_config,
@@ -1379,8 +1394,41 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             len(self.core_engines) * self.client_index
         ) // client_count
 
+    def _abort_in_flight_for_dead_engine(self, dead_idx: int) -> None:
+        if dead_idx >= len(self.core_engines):
+            return
+        dead_identity = self.core_engines[dead_idx]
+        abandoned = [
+            request_id
+            for request_id, engine in self.reqs_in_flight.items()
+            if engine == dead_identity
+        ]
+        if not abandoned:
+            return
+
+        error_outputs = EngineCoreOutputs(
+            engine_index=dead_idx,
+            outputs=[
+                EngineCoreOutput(
+                    request_id=request_id,
+                    new_token_ids=[],
+                    finish_reason=FinishReason.ERROR,
+                )
+                for request_id in abandoned
+            ],
+            finished_requests=set(abandoned),
+        )
+        output_queue = self.outputs_queue
+        task = self.resources.output_queue_task
+        loop = task.get_loop() if task is not None else None
+        if output_queue is not None and loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(output_queue.put_nowait, error_outputs)
+        for request_id in abandoned:
+            self.reqs_in_flight.pop(request_id, None)
+
     def get_core_engine_for_request(self, request: EngineCoreRequest) -> EngineIdentity:
         # Engines are in rank order.
+        dead_engine_indices = getattr(self, "dead_engine_indices", set())
         if (eng_index := request.data_parallel_rank) is None and (
             eng_index := get_late_interaction_engine_index(
                 request.pooling_params, len(self.core_engines)
@@ -1390,20 +1438,26 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             # TODO use P2C alg for larger DP sizes
             num_engines = len(current_counts)
             min_score = sys.maxsize
-            eng_index = 0
+            eng_index = -1
             for i in range(num_engines):
                 # Start from client_index to help with balancing when engines
                 # are empty.
                 idx = (self.eng_start_index + i) % num_engines
+                if idx in dead_engine_indices:
+                    continue
                 waiting, running = current_counts[idx]
                 score = waiting * 4 + running
                 if score < min_score:
                     min_score = score
                     eng_index = idx
+            if eng_index < 0:
+                raise RuntimeError("No healthy DP engines remain.")
             # Increment local waiting count for better balancing between stats
             # updates from the coordinator (which happen every 100ms).
             current_counts[eng_index][0] += self.client_count
 
+        if eng_index in dead_engine_indices:
+            raise RuntimeError(f"DP engine {eng_index} is no longer serving.")
         chosen_engine = self.core_engines[eng_index]
         # Record which engine is chosen for this request, to handle aborts.
         self.reqs_in_flight[request.request_id] = chosen_engine

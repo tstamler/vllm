@@ -513,12 +513,50 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def _check_ft_nccl_status(self, ft_process_group) -> None:
         if torch.cuda.is_current_stream_capturing():
             return
+        if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                ft_process_group.clear_error()
+                return
+            if not hasattr(ft_process_group, "get_result_mask"):
+                raise RuntimeError(
+                    "FT failure survival requires FTProcessGroup.get_result_mask()."
+                )
+            result_mask = ft_process_group.get_result_mask()
+            logger.warning(
+                "FT NCCL collective for group '%s' completed after a peer "
+                "failure; observed responders: %s.",
+                self.unique_name or "<unnamed>",
+                result_mask,
+            )
+            return
         if hasattr(ft_process_group, "check_and_clear_error"):
             status = ft_process_group.check_and_clear_error()
         else:
             status = ft_process_group.get_error()
         if status != self._ft_ok_status:
             raise RuntimeError(f"FT NCCL communicator collective failed: {status}.")
+
+    def converge_ft_membership(self) -> list[bool] | None:
+        """Converge this communicator's FT membership between model steps."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return None
+        ft_process_group = self._get_ft_process_group()
+        if not hasattr(ft_process_group, "ft_converge"):
+            raise RuntimeError(
+                "FT failure survival requires FTProcessGroup.ft_converge()."
+            )
+        old_mask = ft_process_group.get_active_mask()
+        ft_process_group.ft_converge()
+        new_mask = ft_process_group.get_active_mask()
+        if new_mask != old_mask:
+            logger.warning(
+                "FT NCCL membership for group '%s' changed from %s to %s.",
+                self.unique_name or "<unnamed>",
+                old_mask,
+                new_mask,
+            )
+        return new_mask
 
     def _get_ft_external_stream(self, ft_process_group):
         stream_ptr = getattr(ft_process_group, "_stream", None)
@@ -591,9 +629,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if dim < 0:
             dim += staging.dim()
         input_size = staging.size()
+        output_factory = (
+            torch.zeros if envs.VLLM_FT_SURVIVE_WORKER_FAILURE else torch.empty
+        )
 
         if dim == 0:
-            output_tensor = torch.empty(
+            output_tensor = output_factory(
                 (self.world_size * input_size[0],) + input_size[1:],
                 dtype=staging.dtype,
                 device=staging.device,
@@ -602,7 +643,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 (self.world_size,) + input_size
             ).unbind(0)
         else:
-            output_tensor = torch.empty(
+            output_tensor = output_factory(
                 (self.world_size,) + input_size,
                 dtype=staging.dtype,
                 device=staging.device,
@@ -670,7 +711,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._ft_all_gatherv_send_counts[count_key] = device_send_counts
         # Record count initialization in every CUDA graph that uses this cache.
         device_send_counts.fill_(local_size)
-        output = torch.empty(output_shape, dtype=input_.dtype, device=input_.device)
+        output_factory = (
+            torch.zeros if envs.VLLM_FT_SURVIVE_WORKER_FAILURE else torch.empty
+        )
+        output = output_factory(output_shape, dtype=input_.dtype, device=input_.device)
         work, _ = ft_process_group.all_gatherv(
             staging,
             output.view(sum(sizes), row_width),

@@ -196,6 +196,7 @@ class DPCoordinatorProc:
         # For tracking request wave progression.
         current_wave = 0
         engines_running = False
+        degraded_engines: set[int] = set()
 
         # For tracking request counts for internal load-balancing.
         stats_changed = False
@@ -272,7 +273,12 @@ class DPCoordinatorProc:
                         engine_req_counts_list = self._get_engine_counts()
                         stats_changed = False
 
-                    to_publish = (engine_req_counts_list, current_wave, engines_running)
+                    to_publish = (
+                        engine_req_counts_list,
+                        current_wave,
+                        engines_running,
+                        sorted(degraded_engines),
+                    )
                     publish_front.send(msgspec.msgpack.encode(to_publish))
                     last_publish_time = int(time.time() * 1000)
                     continue
@@ -368,6 +374,25 @@ class DPCoordinatorProc:
                     assert outputs.utility_output is None
 
                     eng_index = outputs.engine_index
+                    if outputs.tp_degraded is not None:
+                        degraded_idx = outputs.tp_degraded
+                        if degraded_idx not in degraded_engines:
+                            degraded_engines.add(degraded_idx)
+                            logger.warning(
+                                "DP engine %d reported a worker failure; "
+                                "withdrawing it from request routing.",
+                                degraded_idx,
+                            )
+                            publish_front.send(
+                                msgspec.msgpack.encode(
+                                    (
+                                        None,
+                                        current_wave,
+                                        engines_running,
+                                        sorted(degraded_engines),
+                                    )
+                                )
+                            )
                     scheduler_stats = outputs.scheduler_stats
                     if scheduler_stats:
                         # 1. Updated request load stats - update our local
@@ -436,7 +461,12 @@ class DPCoordinatorProc:
                             self._send_start_wave(publish_back, wave, eng_index)
 
                 if wave_state_changed:
-                    message = (None, current_wave, engines_running)
+                    message = (
+                        None,
+                        current_wave,
+                        engines_running,
+                        sorted(degraded_engines),
+                    )
                     publish_front.send(msgspec.msgpack.encode(message))
 
     @staticmethod

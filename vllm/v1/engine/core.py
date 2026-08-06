@@ -1647,6 +1647,14 @@ class EngineCoreProc(EngineCore):
             for client_index, req_ids in by_client.items():
                 self._send_abort_outputs_to_client(list(req_ids), client_index)
 
+    def _send_error_outputs(self, errored_reqs: list[tuple[str, int]]) -> None:
+        if errored_reqs:
+            by_client = defaultdict[int, set[str]](set)
+            for req_id, client_index in errored_reqs:
+                by_client[client_index].add(req_id)
+            for client_index, req_ids in by_client.items():
+                self._send_error_outputs_to_client(list(req_ids), client_index)
+
 
 class DPEngineCoreProc(EngineCoreProc):
     """ZMQ-wrapper for running EngineCore in background process
@@ -1679,6 +1687,7 @@ class DPEngineCoreProc(EngineCoreProc):
         # START_DP_WAVE messages cannot re-wake the engines.
         self.pending_pause = False
         self.ignore_start_dp_wave = False
+        self._tp_degraded = False
 
         from vllm.distributed.elastic_ep.elastic_state import ElasticEPScalingState
 
@@ -1823,6 +1832,7 @@ class DPEngineCoreProc(EngineCoreProc):
         while self._handle_shutdown():
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
+            self._maybe_handle_own_tp_degradation()
             # Publish request counts before and after GPU step to ensure freshness.
             self._maybe_publish_request_counts()
 
@@ -1834,7 +1844,24 @@ class DPEngineCoreProc(EngineCoreProc):
                     self.process_input_queue_block = True
                     self.eep_scaling_state = None
 
-            executed = self._process_engine_step()
+            if self._tp_degraded:
+                executed = False
+            else:
+                try:
+                    executed = self._process_engine_step()
+                except Exception:
+                    has_dead_workers = getattr(
+                        self.model_executor, "has_dead_workers", lambda: False
+                    )
+                    if not has_dead_workers():
+                        raise
+                    logger.exception(
+                        "Model step was interrupted by a worker death; "
+                        "withdrawing DP rank %d.",
+                        self.dp_rank,
+                    )
+                    self._maybe_handle_own_tp_degradation()
+                    executed = False
             self._maybe_publish_request_counts()
 
             local_unfinished_reqs = self.scheduler.has_unfinished_requests()
@@ -1873,6 +1900,25 @@ class DPEngineCoreProc(EngineCoreProc):
                 self.step_counter = 0
 
         raise SystemExit
+
+    def _maybe_handle_own_tp_degradation(self) -> None:
+        dead_workers = getattr(self.model_executor, "_dead_worker_ranks", None)
+        if not dead_workers:
+            return
+        if not getattr(self, "_tp_degraded", False):
+            self._tp_degraded = True
+            logger.warning(
+                "DP rank %d lost TP worker(s) %s and is withdrawing from "
+                "serving while its surviving workers continue EP dummy steps.",
+                self.dp_rank,
+                sorted(dead_workers),
+            )
+            self.output_queue.put_nowait(
+                (-1, EngineCoreOutputs(tp_degraded=self.dp_rank))
+            )
+
+        errored = self.scheduler.finish_requests(None, RequestStatus.FINISHED_ERROR)
+        self._send_error_outputs(errored)
 
     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
         # Optimization - only perform finish-sync all-reduce every 32 steps.

@@ -33,6 +33,7 @@ from vllm.distributed.kv_transfer import (
 )
 from vllm.distributed.parallel_state import (
     Handle,
+    get_ep_group,
     get_pp_group,
     get_tp_group,
 )
@@ -781,6 +782,7 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
+        self._converge_ft_membership()
         # ensure any previous non-blocking PP sends are complete
         if self._pp_send_work:
             for handle in self._pp_send_work:
@@ -868,6 +870,19 @@ class Worker(WorkerBase):
 
         return None
 
+    def _converge_ft_membership(self) -> None:
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return
+        seen: set[int] = set()
+        for group in (get_tp_group(), get_ep_group()):
+            communicator = group.device_communicator
+            if communicator is None or id(communicator) in seen:
+                continue
+            seen.add(id(communicator))
+            converge = getattr(communicator, "converge_ft_membership", None)
+            if converge is not None:
+                converge()
+
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()
 
@@ -925,6 +940,7 @@ class Worker(WorkerBase):
             self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
+        self._converge_ft_membership()
         num_tokens = getattr(self.model_runner, "uniform_decode_query_len", 1)
         self.model_runner._dummy_run(num_tokens, uniform_decode=True)
 
