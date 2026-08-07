@@ -546,9 +546,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
             raise RuntimeError(
                 "FT failure survival requires FTProcessGroup.ft_converge()."
             )
-        old_mask = ft_process_group.get_active_mask()
-        ft_process_group.ft_converge()
-        new_mask = ft_process_group.get_active_mask()
+        # This can first run from Worker.execute_model(), which is decorated
+        # with torch.inference_mode(). FTProcessGroup lazily allocates barrier
+        # buffers in ft_converge(); keep them as normal tensors so later calls
+        # from execute_dummy_batch() can update them outside inference mode.
+        with torch.inference_mode(False):
+            old_mask = ft_process_group.get_active_mask()
+            ft_process_group.ft_converge()
+            new_mask = ft_process_group.get_active_mask()
         if new_mask != old_mask:
             logger.warning(
                 "FT NCCL membership for group '%s' changed from %s to %s.",
