@@ -4,6 +4,7 @@
 import torch
 import torch.distributed as dist
 
+import vllm.envs as envs
 from vllm.config import ParallelConfig
 from vllm.distributed.parallel_state import get_dp_group, get_ep_group
 from vllm.logger import init_logger
@@ -13,14 +14,6 @@ from vllm.v1.worker.ubatch_utils import (
 )
 
 logger = init_logger(__name__)
-
-_use_ft_dp_batch_size_sync = False
-
-
-def enable_ft_dp_batch_size_sync() -> None:
-    """Stop using the fixed-membership worker DP group after a peer dies."""
-    global _use_ft_dp_batch_size_sync
-    _use_ft_dp_batch_size_sync = True
 
 
 def _get_device_and_group(parallel_config: ParallelConfig):
@@ -133,7 +126,7 @@ def _synchronize_dp_ranks(
     """
     assert num_tokens_padded >= num_tokens_unpadded
 
-    if _use_ft_dp_batch_size_sync:
+    if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
         if cudagraph_mode != 0:
             raise RuntimeError(
                 "FT worker-failure survival currently requires --enforce-eager; "

@@ -60,7 +60,6 @@ from vllm.v1.outputs import (
     ModelRunnerOutput,
 )
 from vllm.v1.utils import compute_iteration_details, report_usage_stats
-from vllm.v1.worker.dp_utils import enable_ft_dp_batch_size_sync
 from vllm.v1.worker.utils import is_residual_scattered_for_sp
 from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase
 from vllm.v1.worker.workspace import init_workspace_manager
@@ -885,7 +884,6 @@ class Worker(WorkerBase):
             converge = getattr(communicator, "converge_ft_membership", None)
             if converge is not None:
                 converge()
-        enable_ft_dp_batch_size_sync()
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()

@@ -19,13 +19,12 @@ Enable this behavior with:
 export VLLM_USE_FT_NCCL_COMMUNICATOR=1
 export VLLM_USE_FT_NCCL_EP=1
 export VLLM_FT_SURVIVE_WORKER_FAILURE=1
-export FT_BARRIER_MODE=store
+export FT_BARRIER_MODE=collective
 ```
 
-The experiment defaults to the FT process group's store-backed convergence
-barrier. The collective convergence mode currently allocates its symmetric
-barrier windows lazily, which is too late after a worker has exited. TP and EP
-model communication still uses the FT NCCL kernels.
+The experiment prepares the collective convergence barrier's symmetric windows
+during communicator initialization, while every worker is alive. This avoids
+collective NCCL window registration after a worker has exited.
 
 ## What Changed
 
@@ -39,10 +38,11 @@ model communication still uses the FT NCCL kernels.
    their CPU group and issue one aligned FT membership convergence RPC to all
    surviving TP and EP workers. A collective timeout is treated as a membership
    event under the experiment flag rather than an immediate fatal exception.
-5. After convergence, worker-side DP batch-size coordination moves from the
-   original fixed-membership Gloo group to a small FT EP `all_gatherv`. This
-   keeps the per-DP token sizes needed by AG/RS dispatch and combine without
-   contacting the dead worker. This fallback currently requires eager mode.
+5. In failure-survival mode, worker-side DP batch-size coordination uses a
+   small FT EP `all_gatherv` from startup instead of the original
+   fixed-membership Gloo group. This prevents already-queued Gloo work from
+   racing membership convergence and keeps the per-DP token sizes needed by
+   AG/RS dispatch and combine. This fallback currently requires eager mode.
 6. A degraded DP engine is relayed through the DP coordinator to front-end load
    balancers. New requests avoid it and its in-flight requests finish with an
    error so clients can retry.

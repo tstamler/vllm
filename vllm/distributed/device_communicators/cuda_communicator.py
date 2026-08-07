@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
+
 import torch
 from torch.distributed import ProcessGroup
 
@@ -364,7 +366,38 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         self._ft_process_group = ft_process_group
         self._ft_ok_status = FT_OK
+        self._prepare_ft_convergence(ft_process_group)
         return ft_process_group
+
+    def _prepare_ft_convergence(self, ft_process_group) -> None:
+        """Collectively allocate convergence buffers before a peer can fail."""
+        if (
+            not envs.VLLM_FT_SURVIVE_WORKER_FAILURE
+            or self.world_size <= 1
+            or self._ft_group_kind() not in ("tp", "ep")
+            or os.environ.get("FT_BARRIER_MODE", "collective") != "collective"
+        ):
+            return
+
+        prepare = getattr(ft_process_group, "prepare_convergence", None)
+        if callable(prepare):
+            with torch.inference_mode(False):
+                prepare()
+            return
+
+        # Compatibility with FTProcessGroup versions that allocate these
+        # lazily in _ft_barrier_collective(). empty() and window registration
+        # are collective, so this must remain in communicator initialization.
+        with torch.inference_mode(False):
+            n = self.world_size
+            bar_send = getattr(ft_process_group, "_bar_send", None)
+            if bar_send is None or bar_send.numel() != n * n:
+                ft_process_group._bar_send = ft_process_group.empty(
+                    n * n, dtype=torch.float32
+                )
+                ft_process_group._bar_out = torch.zeros(
+                    n * n, dtype=torch.float32, device=self.device
+                )
 
     def _ft_fallback_reason(self, input_: torch.Tensor, op: str) -> str | None:
         return self._ft_staging_fallback_reason(

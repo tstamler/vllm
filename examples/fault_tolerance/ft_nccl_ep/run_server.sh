@@ -13,11 +13,9 @@ export VLLM_USE_FT_NCCL_COMMUNICATOR=1
 export VLLM_USE_FT_NCCL_EP=1
 export VLLM_FT_SURVIVE_WORKER_FAILURE=1
 export FT_NCCL_MAX_COUNT=${FT_NCCL_MAX_COUNT:-4194304}
-# The collective convergence barrier lazily registers symmetric windows. That
-# cannot succeed after a member has exited unless FT NCCL prepared the windows
-# during startup. The store barrier has the same membership semantics without
-# post-failure NCCL registration.
-export FT_BARRIER_MODE=${FT_BARRIER_MODE:-store}
+# vLLM prepares the collective barrier's symmetric windows during startup,
+# before a worker can be removed from the communicator.
+export FT_BARRIER_MODE=${FT_BARRIER_MODE:-collective}
 
 exec vllm serve "${MODEL}" \
   --host "${HOST}" \
