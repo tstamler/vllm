@@ -29,9 +29,10 @@ export VLLM_FT_SURVIVE_WORKER_FAILURE=1
    flow control.
 3. RPC response collection stops waiting for a worker that dies in flight and
    sends later RPCs only to live workers.
-4. FT TP and EP process groups converge their active masks at model-step
-   boundaries. A collective timeout is treated as a membership event under the
-   experiment flag rather than an immediate fatal exception.
+4. After a worker death, the still-alive DP engine processes rendezvous on
+   their CPU group and issue one aligned FT membership convergence RPC to all
+   surviving TP and EP workers. A collective timeout is treated as a membership
+   event under the experiment flag rather than an immediate fatal exception.
 5. A degraded DP engine is relayed through the DP coordinator to front-end load
    balancers. New requests avoid it and its in-flight requests finish with an
    error so clients can retry.

@@ -782,7 +782,6 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
-        self._converge_ft_membership()
         # ensure any previous non-blocking PP sends are complete
         if self._pp_send_work:
             for handle in self._pp_send_work:
@@ -870,11 +869,14 @@ class Worker(WorkerBase):
 
         return None
 
-    def _converge_ft_membership(self) -> None:
+    def converge_ft_membership(self) -> None:
         if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
             return
         seen: set[int] = set()
-        for group in (get_tp_group(), get_ep_group()):
+        # Every surviving worker participates in EP, so converge it first
+        # while the engine-level rendezvous has all workers closely aligned.
+        # TP groups are independent and can converge afterward.
+        for group in (get_ep_group(), get_tp_group()):
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
@@ -940,7 +942,6 @@ class Worker(WorkerBase):
             self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
-        self._converge_ft_membership()
         num_tokens = getattr(self.model_runner, "uniform_decode_query_len", 1)
         self.model_runner._dummy_run(num_tokens, uniform_decode=True)
 
