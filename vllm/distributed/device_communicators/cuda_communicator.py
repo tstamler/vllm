@@ -27,6 +27,21 @@ _FT_NCCL_ALL_GATHERV_DTYPES = _FT_NCCL_DTYPES | frozenset(
 )
 
 
+def _unpack_ft_rank_values(
+    packed: torch.Tensor, recv_counts: torch.Tensor
+) -> torch.Tensor:
+    """Restore one packed value per FT rank, leaving inactive ranks at zero."""
+    counts_cpu = recv_counts.cpu()
+    if torch.any((counts_cpu < 0) | (counts_cpu > 1)):
+        raise RuntimeError(
+            f"Expected zero or one FT metadata value per rank, got {counts_cpu}."
+        )
+    num_active = int(counts_cpu.sum().item())
+    rank_values = torch.zeros_like(counts_cpu)
+    rank_values[counts_cpu.bool()] = packed[:num_active].cpu()
+    return rank_values
+
+
 class CudaCommunicator(DeviceCommunicatorBase):
     def __init__(
         self,
@@ -562,6 +577,52 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 new_mask,
             )
         return new_mask
+
+    def ft_sync_dp_batch_sizes(
+        self, local_num_tokens: int, dp_size: int
+    ) -> torch.Tensor:
+        """Exchange DP token counts over the failure-tolerant EP group."""
+        if not self._should_use_ft_nccl_ep_communicator():
+            raise RuntimeError("FT DP batch-size sync requires the FT NCCL EP path.")
+        if self.world_size % dp_size != 0:
+            raise RuntimeError(
+                f"EP world size {self.world_size} is not divisible by DP size "
+                f"{dp_size}."
+            )
+
+        local_count = torch.tensor(
+            [local_num_tokens], dtype=torch.int32, device=self.device
+        )
+        staging = self._get_ft_native_staging_view(
+            (1,),
+            local_count.dtype,
+            local_count.device,
+            "all-gatherv",
+            1,
+            1,
+        )
+        if staging is None:
+            raise RuntimeError("FT NCCL could not exchange DP batch sizes.")
+        ft_process_group = self._get_ft_process_group()
+        self._copy_to_ft_staging(staging, local_count, ft_process_group)
+        packed = torch.zeros(
+            self.world_size, dtype=local_count.dtype, device=local_count.device
+        )
+        work, recv_counts = ft_process_group.all_gatherv(
+            staging,
+            packed,
+            1,
+            1,
+        )
+        work.wait()
+        self._check_ft_nccl_status(ft_process_group)
+        rank_values = _unpack_ft_rank_values(packed, recv_counts)
+
+        # EP ranks are ordered with all local TP/PCP replicas for one DP rank
+        # adjacent. Replicas report the same pre-sequence-parallel token count;
+        # max also ignores the reconstructed zero slot for an inactive rank.
+        replicas_per_dp = self.world_size // dp_size
+        return rank_values.view(dp_size, replicas_per_dp).amax(dim=1)
 
     def _get_ft_external_stream(self, ft_process_group):
         stream_ptr = getattr(ft_process_group, "_stream", None)

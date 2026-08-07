@@ -33,10 +33,14 @@ export VLLM_FT_SURVIVE_WORKER_FAILURE=1
    their CPU group and issue one aligned FT membership convergence RPC to all
    surviving TP and EP workers. A collective timeout is treated as a membership
    event under the experiment flag rather than an immediate fatal exception.
-5. A degraded DP engine is relayed through the DP coordinator to front-end load
+5. After convergence, worker-side DP batch-size coordination moves from the
+   original fixed-membership Gloo group to a small FT EP `all_gatherv`. This
+   keeps the per-DP token sizes needed by AG/RS dispatch and combine without
+   contacting the dead worker. This fallback currently requires eager mode.
+6. A degraded DP engine is relayed through the DP coordinator to front-end load
    balancers. New requests avoid it and its in-flight requests finish with an
    error so clients can retry.
-6. During active DP waves, the remaining worker in a degraded engine executes
+7. During active DP waves, the remaining worker in a degraded engine executes
    dummy batches so the healthy engines can continue their EP collectives.
 
 ## Run

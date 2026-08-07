@@ -5,7 +5,7 @@ import torch
 import torch.distributed as dist
 
 from vllm.config import ParallelConfig
-from vllm.distributed.parallel_state import get_dp_group
+from vllm.distributed.parallel_state import get_dp_group, get_ep_group
 from vllm.logger import init_logger
 from vllm.v1.worker.ubatch_utils import (
     check_ubatch_thresholds,
@@ -13,6 +13,14 @@ from vllm.v1.worker.ubatch_utils import (
 )
 
 logger = init_logger(__name__)
+
+_use_ft_dp_batch_size_sync = False
+
+
+def enable_ft_dp_batch_size_sync() -> None:
+    """Stop using the fixed-membership worker DP group after a peer dies."""
+    global _use_ft_dp_batch_size_sync
+    _use_ft_dp_batch_size_sync = True
 
 
 def _get_device_and_group(parallel_config: ParallelConfig):
@@ -124,6 +132,28 @@ def _synchronize_dp_ranks(
 
     """
     assert num_tokens_padded >= num_tokens_unpadded
+
+    if _use_ft_dp_batch_size_sync:
+        if cudagraph_mode != 0:
+            raise RuntimeError(
+                "FT worker-failure survival currently requires --enforce-eager; "
+                "cross-DP CUDA graph coordination is unavailable after a worker "
+                "failure."
+            )
+        communicator = get_ep_group().device_communicator
+        sync_batch_sizes = getattr(
+            communicator, "ft_sync_dp_batch_sizes", None
+        )
+        if sync_batch_sizes is None:
+            raise RuntimeError(
+                "FT worker-failure survival requires an EP communicator with "
+                "ft_sync_dp_batch_sizes()."
+            )
+        num_tokens_across_dp = sync_batch_sizes(
+            num_tokens_padded,
+            parallel_config.data_parallel_size,
+        )
+        return False, num_tokens_across_dp, cudagraph_mode
 
     # Coordinate between the DP ranks via an All Reduce
     # to determine the total number of tokens that each rank
