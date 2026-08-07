@@ -2,11 +2,13 @@
 set -euo pipefail
 
 PATTERN=${1:-Worker_DP1_TP1}
-mapfile -t pids < <(pgrep -f "${PATTERN}" || true)
+PROCESS_PREFIX=${VLLM_PROCESS_NAME_PREFIX:-VLLM}
+PROCESS_REGEX="^${PROCESS_PREFIX}::${PATTERN}(_EP[0-9]+)?$"
+mapfile -t pids < <(pgrep -f "${PROCESS_REGEX}" || true)
 
 if (( ${#pids[@]} != 1 )); then
-  printf 'Expected exactly one process matching %q; found %d: %s\n' \
-    "${PATTERN}" "${#pids[@]}" "${pids[*]:-none}" >&2
+  printf 'Expected exactly one process title matching %q; found %d: %s\n' \
+    "${PROCESS_REGEX}" "${#pids[@]}" "${pids[*]:-none}" >&2
   exit 1
 fi
 
