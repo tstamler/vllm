@@ -19,7 +19,13 @@ Enable this behavior with:
 export VLLM_USE_FT_NCCL_COMMUNICATOR=1
 export VLLM_USE_FT_NCCL_EP=1
 export VLLM_FT_SURVIVE_WORKER_FAILURE=1
+export FT_BARRIER_MODE=store
 ```
+
+The experiment defaults to the FT process group's store-backed convergence
+barrier. The collective convergence mode currently allocates its symmetric
+barrier windows lazily, which is too late after a worker has exited. TP and EP
+model communication still uses the FT NCCL kernels.
 
 ## What Changed
 
