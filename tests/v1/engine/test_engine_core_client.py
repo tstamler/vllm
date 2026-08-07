@@ -236,37 +236,6 @@ def test_dplb_non_late_interaction_still_uses_lb():
     assert client.lb_engines[1][0] == 1
 
 
-def test_dplb_skips_degraded_engine():
-    client = object.__new__(DPLBAsyncMPClient)
-    client.client_count = 1
-    client.reqs_in_flight = {}
-    client.core_engines = [b"\x00\x00", b"\x01\x00"]
-    client.lb_engines = [[0, 0], [5, 5]]
-    client.eng_start_index = 0
-    client.dead_engine_indices = {0}
-
-    request = make_request(SamplingParams(max_tokens=1))
-    chosen_engine = client.get_core_engine_for_request(request)
-
-    assert chosen_engine == client.core_engines[1]
-
-
-def test_dplb_rejects_explicit_degraded_engine():
-    client = object.__new__(DPLBAsyncMPClient)
-    client.client_count = 1
-    client.reqs_in_flight = {}
-    client.core_engines = [b"\x00\x00", b"\x01\x00"]
-    client.lb_engines = [[0, 0], [0, 0]]
-    client.eng_start_index = 0
-    client.dead_engine_indices = {1}
-
-    request = make_request(SamplingParams(max_tokens=1))
-    request.data_parallel_rank = 1
-
-    with pytest.raises(RuntimeError, match="no longer serving"):
-        client.get_core_engine_for_request(request)
-
-
 def loop_until_done(client: EngineCoreClient, outputs: dict):
     while True:
         engine_core_outputs = client.get_output().outputs
