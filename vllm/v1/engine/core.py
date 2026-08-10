@@ -1868,13 +1868,20 @@ class DPEngineCoreProc(EngineCoreProc):
 
             local_unfinished_reqs = self.scheduler.has_unfinished_requests()
             if not executed:
-                if not local_unfinished_reqs and not self.engines_running:
+                if self._tp_degraded:
+                    # This DP engine's EP ranks were removed together when one
+                    # of its TP workers died. Its remaining worker must stay
+                    # idle: re-entering model dummy work would use a stale EP
+                    # mask and start an uncoordinated convergence. The EngineCore
+                    # process still participates in CPU-side DP coordination.
+                    pass
+                elif not local_unfinished_reqs and not self.engines_running:
                     # All engines are idle.
                     continue
-
-                # We are in a running state and so must execute a dummy pass
-                # if the model didn't execute any ready requests.
-                self.execute_dummy_batch()
+                else:
+                    # We are in a running state and so must execute a dummy pass
+                    # if the model didn't execute any ready requests.
+                    self.execute_dummy_batch()
 
             # 3) All-reduce operation to determine global unfinished reqs.
             self.engines_running = self._has_global_unfinished_reqs(
@@ -1910,8 +1917,8 @@ class DPEngineCoreProc(EngineCoreProc):
         if not getattr(self, "_tp_degraded", False):
             self._tp_degraded = True
             logger.warning(
-                "DP rank %d lost TP worker(s) %s and is withdrawing from "
-                "serving while its surviving workers continue EP dummy steps.",
+                "DP rank %d lost TP worker(s) %s and is withdrawing all of its "
+                "workers from serving and EP collectives.",
                 self.dp_rank,
                 sorted(dead_workers),
             )
