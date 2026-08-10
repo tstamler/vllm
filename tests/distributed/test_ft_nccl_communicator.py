@@ -42,6 +42,7 @@ def ft_nccl_ep_communicator_worker(
         m.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         m.setenv("VLLM_USE_FT_NCCL_COMMUNICATOR", "0")
         m.setenv("VLLM_USE_FT_NCCL_EP", "1")
+        m.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
         m.setenv("VLLM_DISABLE_PYNCCL", "0")
         m.setenv("FT_NCCL_MAX_COUNT", "2048")
         m.setenv("NCCL_NVLS_ENABLE", "1")
