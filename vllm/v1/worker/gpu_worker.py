@@ -885,6 +885,17 @@ class Worker(WorkerBase):
             if converge is not None:
                 converge()
 
+    def converge_ft_tp_membership(self) -> None:
+        """Converge only this DP engine's TP group after a worker death."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return
+        communicator = get_tp_group().device_communicator
+        if communicator is None:
+            return
+        converge = getattr(communicator, "converge_ft_membership", None)
+        if converge is not None:
+            converge()
+
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()
 

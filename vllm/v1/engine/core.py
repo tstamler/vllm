@@ -1945,10 +1945,11 @@ class DPEngineCoreProc(EngineCoreProc):
 
         dist.barrier(group=self.dp_group)
         logger.warning(
-            "Converging FT membership after worker failure in DP rank(s) %s.",
+            "Converging FT TP membership after worker failure in DP rank(s) %s; "
+            "EP membership is owned by the in-band dispatch transaction.",
             list(failures),
         )
-        self.model_executor.collective_rpc("converge_ft_membership")
+        self.model_executor.collective_rpc("converge_ft_tp_membership")
         self._ft_converged_failures = failures
 
     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
