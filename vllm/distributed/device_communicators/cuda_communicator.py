@@ -624,39 +624,73 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 f"{dp_size}."
             )
 
-        local_count = torch.tensor(
-            [local_num_tokens], dtype=torch.int32, device=self.device
-        )
-        staging = self._get_ft_native_staging_view(
-            (1,),
-            local_count.dtype,
-            local_count.device,
-            "all-gatherv",
-            1,
-            1,
-        )
-        if staging is None:
-            raise RuntimeError("FT NCCL could not exchange DP batch sizes.")
         ft_process_group = self._get_ft_process_group()
-        self._copy_to_ft_staging(staging, local_count, ft_process_group)
-        packed = torch.zeros(
-            self.world_size, dtype=local_count.dtype, device=local_count.device
-        )
-        work, recv_counts = ft_process_group.all_gatherv(
-            staging,
-            packed,
-            1,
-            1,
-        )
-        work.wait()
-        self._check_ft_nccl_status(ft_process_group)
-        rank_values = _unpack_ft_rank_values(packed, recv_counts)
+        for _ in range(self.world_size):
+            local_count = torch.tensor(
+                [local_num_tokens], dtype=torch.int32, device=self.device
+            )
+            staging = self._get_ft_native_staging_view(
+                (1,),
+                local_count.dtype,
+                local_count.device,
+                "all-gatherv",
+                1,
+                1,
+            )
+            if staging is None:
+                raise RuntimeError("FT NCCL could not exchange DP batch sizes.")
+            self._copy_to_ft_staging(staging, local_count, ft_process_group)
+            packed = torch.zeros(
+                self.world_size,
+                dtype=local_count.dtype,
+                device=local_count.device,
+            )
+            work, recv_counts = ft_process_group.all_gatherv(
+                staging,
+                packed,
+                1,
+                1,
+            )
+            work.wait()
 
-        # EP ranks are ordered with all local TP/PCP replicas for one DP rank
-        # adjacent. Replicas report the same pre-sequence-parallel token count;
-        # max also ignores the reconstructed zero slot for an inactive rank.
-        replicas_per_dp = self.world_size // dp_size
-        return rank_values.view(dp_size, replicas_per_dp).amax(dim=1)
+            # The count exchange defines the shape of the whole forward pass.
+            # Complete it before accepting the metadata, but only once per step.
+            torch.cuda.current_stream(local_count.device).synchronize()
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                ft_process_group.clear_error()
+                rank_values = _unpack_ft_rank_values(packed, recv_counts)
+
+                # EP ranks are ordered with all local TP/PCP replicas for one DP
+                # rank adjacent. Replicas report the same pre-SP token count.
+                replicas_per_dp = self.world_size // dp_size
+                return rank_values.view(dp_size, replicas_per_dp).amax(dim=1)
+
+            result_mask = ft_process_group.get_result_mask()
+            old_mask = ft_process_group.get_active_mask()
+            with torch.inference_mode(False):
+                ft_process_group.ft_converge()
+            new_mask = ft_process_group.get_active_mask()
+            logger.warning(
+                "Retrying FT NCCL DP batch-size exchange for group '%s' after "
+                "status %s; observed responders: %s; membership changed from "
+                "%s to %s.",
+                self.unique_name or "<unnamed>",
+                status,
+                result_mask,
+                old_mask,
+                new_mask,
+            )
+            if new_mask == old_mask:
+                raise RuntimeError(
+                    "FT NCCL DP batch-size exchange failed, but convergence "
+                    "did not remove a rank from the active mask."
+                )
+
+        raise RuntimeError(
+            "FT NCCL DP batch-size exchange exhausted its membership-change "
+            "retry limit."
+        )
 
     def _get_ft_external_stream(self, ft_process_group):
         stream_ptr = getattr(ft_process_group, "_stream", None)
