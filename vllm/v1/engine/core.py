@@ -1960,9 +1960,15 @@ class DPEngineCoreProc(EngineCoreProc):
         self._ft_converged_failures = failures
 
     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
-        # Optimization - only perform finish-sync all-reduce every 32 steps.
+        # Normal serving amortizes this synchronization over 32 steps. FT EP
+        # requires a tighter execution boundary: while a wave drains, allowing
+        # one engine to start extra dummy forwards after another has paused can
+        # make healthy EP ranks miss a collective and look failed.
         self.step_counter += 1
-        if self.step_counter % 32 != 0:
+        if (
+            not envs.VLLM_FT_SURVIVE_WORKER_FAILURE
+            and self.step_counter % 32 != 0
+        ):
             return True
 
         has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
