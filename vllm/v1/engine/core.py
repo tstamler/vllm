@@ -1956,7 +1956,11 @@ class DPEngineCoreProc(EngineCoreProc):
             "EP membership is owned by the in-band dispatch transaction.",
             list(failures),
         )
-        self.model_executor.collective_rpc("converge_ft_tp_membership")
+        # A degraded DP engine is permanently withdrawn and issues no more
+        # model work. Its surviving worker may still finish the interrupted
+        # RPC, so do not enqueue another RPC or consume that stale response.
+        if not self._tp_degraded:
+            self.model_executor.collective_rpc("converge_ft_tp_membership")
         self._ft_converged_failures = failures
 
     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:

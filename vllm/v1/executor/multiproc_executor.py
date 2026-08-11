@@ -346,6 +346,15 @@ class MultiprocExecutor(Executor):
     def has_dead_workers(self) -> bool:
         return bool(self._dead_worker_ranks)
 
+    def _raise_if_worker_died_since(
+        self, dead_workers_at_start: frozenset[int], method: str | Callable
+    ) -> None:
+        newly_dead = self._dead_worker_ranks.difference(dead_workers_at_start)
+        if newly_dead:
+            raise WorkerDiedError(
+                f"Worker(s) {sorted(newly_dead)} died during RPC call to {method}."
+            )
+
     def register_failure_callback(self, callback: FailureCallback):
         if self.is_failed:
             callback()
@@ -403,6 +412,7 @@ class MultiprocExecutor(Executor):
         if self.is_failed:
             raise RuntimeError("Executor failed.")
 
+        dead_workers_at_start = frozenset(self._dead_worker_ranks)
         deadline = None if timeout is None else time.monotonic() + timeout
         kwargs = kwargs or {}
 
@@ -444,10 +454,10 @@ class MultiprocExecutor(Executor):
             responses = []
             for rank, mq in response_mqs:
                 while True:
-                    if rank in self._dead_worker_ranks:
-                        raise WorkerDiedError(
-                            f"Worker {rank} died during RPC call to {method}."
-                        )
+                    # Every model RPC involves all live TP workers even when
+                    # only one rank returns a response. A death on a different
+                    # rank must therefore interrupt the RPC as well.
+                    self._raise_if_worker_died_since(dead_workers_at_start, method)
                     remaining = (
                         None if deadline is None else deadline - time.monotonic()
                     )
