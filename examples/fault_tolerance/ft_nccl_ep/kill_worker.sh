@@ -16,4 +16,9 @@ pid=${pids[0]}
 ps -o pid=,ppid=,command= -p "${pid}"
 printf 'Sending SIGKILL to PID %s in 3 seconds...\n' "${pid}"
 sleep 3
+kill_timestamp=$(date +%s.%N)
 kill -KILL "${pid}"
+if [[ -n "${EVENT_LOG:-}" ]]; then
+  printf '%s,worker_killed,pid=%s pattern=%s\n' \
+    "${kill_timestamp}" "${pid}" "${PATTERN}" >> "${EVENT_LOG}"
+fi
