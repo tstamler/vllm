@@ -612,6 +612,54 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
         return new_mask
 
+    def set_ft_ep_active_mask(
+        self, failed_dp_ranks: tuple[int, ...], dp_size: int
+    ) -> list[bool]:
+        """Install framework-owned EP membership after a DP failure."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            raise RuntimeError("FT EP membership requires worker-failure survival.")
+        if dp_size <= 0 or self.world_size % dp_size != 0:
+            raise ValueError(
+                f"EP world size {self.world_size} is not divisible by DP size "
+                f"{dp_size}."
+            )
+        failed = set(failed_dp_ranks)
+        if any(rank < 0 or rank >= dp_size for rank in failed):
+            raise ValueError(f"Invalid failed DP ranks: {sorted(failed)}")
+
+        replicas_per_dp = self.world_size // dp_size
+        active_mask = [
+            ep_rank // replicas_per_dp not in failed
+            for ep_rank in range(self.world_size)
+        ]
+        if not active_mask[self.rank_in_group]:
+            raise RuntimeError(
+                "A withdrawn DP rank cannot install membership for subsequent "
+                "EP collectives."
+            )
+
+        ft_process_group = self._get_ft_process_group()
+        if not hasattr(ft_process_group, "set_active_mask"):
+            raise RuntimeError(
+                "Framework-managed FT EP membership requires "
+                "FTProcessGroup.set_active_mask()."
+            )
+        old_mask = ft_process_group.get_active_mask()
+        ft_process_group.set_active_mask(active_mask)
+        # This RPC runs between model steps, after all previous FT work has
+        # completed. Do not let a sticky timeout from the interrupted step
+        # poison the first collective under the newly installed membership.
+        ft_process_group.clear_error()
+        if active_mask != old_mask:
+            logger.warning(
+                "Installed framework-managed FT NCCL membership for group "
+                "'%s': %s -> %s.",
+                self.unique_name or "<unnamed>",
+                old_mask,
+                active_mask,
+            )
+        return active_mask
+
     def ft_sync_dp_batch_sizes(
         self, local_num_tokens: int, dp_size: int
     ) -> torch.Tensor:

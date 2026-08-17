@@ -1688,7 +1688,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self.pending_pause = False
         self.ignore_start_dp_wave = False
         self._tp_degraded = False
-        self._ft_converged_failures: tuple[int, ...] = ()
+        self._ft_installed_failures: tuple[int, ...] = ()
 
         from vllm.distributed.elastic_ep.elastic_state import ElasticEPScalingState
 
@@ -1834,7 +1834,7 @@ class DPEngineCoreProc(EngineCoreProc):
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
             self._maybe_handle_own_tp_degradation()
-            self._maybe_converge_ft_membership_after_failure()
+            self._maybe_install_ft_membership_after_failure()
             # Publish request counts before and after GPU step to ensure freshness.
             self._maybe_publish_request_counts()
 
@@ -1933,8 +1933,8 @@ class DPEngineCoreProc(EngineCoreProc):
         errored = self.scheduler.finish_requests(None, RequestStatus.FINISHED_ERROR)
         self._send_error_outputs(errored)
 
-    def _maybe_converge_ft_membership_after_failure(self) -> None:
-        """Run one globally aligned FT convergence per observed DP failure."""
+    def _maybe_install_ft_membership_after_failure(self) -> None:
+        """Install one globally aligned EP mask per observed DP failure."""
         if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
             return
         failures = tuple(
@@ -1942,7 +1942,7 @@ class DPEngineCoreProc(EngineCoreProc):
             for rank in range(self.dp_size)
             if self.dp_store.check([f"ft_worker_failure/{rank}"])
         )
-        if not failures or failures == self._ft_converged_failures:
+        if not failures or failures == self._ft_installed_failures:
             return
 
         # Engine processes remain alive after a worker dies. Rendezvous them on
@@ -1952,16 +1952,18 @@ class DPEngineCoreProc(EngineCoreProc):
 
         dist.barrier(group=self.dp_group)
         logger.warning(
-            "Converging FT TP membership after worker failure in DP rank(s) %s; "
-            "EP membership is owned by the in-band dispatch transaction.",
+            "Installing framework-managed FT EP membership after worker "
+            "failure in DP rank(s) %s.",
             list(failures),
         )
         # A degraded DP engine is permanently withdrawn and issues no more
         # model work. Its surviving worker may still finish the interrupted
         # RPC, so do not enqueue another RPC or consume that stale response.
         if not self._tp_degraded:
-            self.model_executor.collective_rpc("converge_ft_tp_membership")
-        self._ft_converged_failures = failures
+            self.model_executor.collective_rpc(
+                "set_ft_ep_active_mask", args=(failures, self.dp_size)
+            )
+        self._ft_installed_failures = failures
 
     def _has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
         # Normal serving amortizes this synchronization over 32 steps. FT EP

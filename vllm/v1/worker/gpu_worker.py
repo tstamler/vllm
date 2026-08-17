@@ -896,6 +896,23 @@ class Worker(WorkerBase):
         if converge is not None:
             converge()
 
+    def set_ft_ep_active_mask(
+        self, failed_dp_ranks: tuple[int, ...], dp_size: int
+    ) -> None:
+        """Install the framework-agreed EP mask between model steps."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return
+        communicator = get_ep_group().device_communicator
+        if communicator is None:
+            return
+        set_active_mask = getattr(communicator, "set_ft_ep_active_mask", None)
+        if set_active_mask is None:
+            raise RuntimeError(
+                "FT failure survival requires communicator support for "
+                "framework-managed EP membership."
+            )
+        set_active_mask(failed_dp_ranks, dp_size)
+
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()
 

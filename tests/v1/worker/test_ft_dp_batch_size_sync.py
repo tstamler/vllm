@@ -44,3 +44,31 @@ def test_prepare_ft_convergence_allocates_legacy_buffers(monkeypatch):
     assert process_group._bar_send.numel() == 4
     assert process_group._bar_out is not None
     assert process_group._bar_out.numel() == 4
+
+
+def test_set_ft_ep_active_mask_removes_entire_failed_dp_rank(monkeypatch):
+    class FakeProcessGroup:
+        active_mask = [True] * 8
+        error_cleared = False
+
+        def get_active_mask(self):
+            return list(self.active_mask)
+
+        def set_active_mask(self, mask):
+            self.active_mask = list(mask)
+
+        def clear_error(self):
+            self.error_cleared = True
+
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+    communicator = object.__new__(CudaCommunicator)
+    communicator.world_size = 8
+    communicator.rank_in_group = 4
+    communicator.unique_name = "ep:0"
+    communicator._ft_process_group = FakeProcessGroup()
+
+    active_mask = communicator.set_ft_ep_active_mask((1,), dp_size=4)
+
+    assert active_mask == [True, True, False, False, True, True, True, True]
+    assert communicator._ft_process_group.active_mask == active_mask
+    assert communicator._ft_process_group.error_cleared
