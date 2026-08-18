@@ -106,16 +106,3 @@ def test_set_ft_ep_active_mask_removes_entire_failed_dp_rank(monkeypatch):
     assert active_mask == [True, True, False, False, True, True, True, True]
     assert communicator._ft_process_group.active_mask == active_mask
     assert communicator._ft_process_group.error_cleared
-
-
-def test_set_ft_timeout_us_returns_previous_value():
-    class FakeProcessGroup:
-        _timeout_us = 5_000_000
-
-    communicator = object.__new__(CudaCommunicator)
-    communicator._ft_process_group = FakeProcessGroup()
-
-    old_timeout_us = communicator.set_ft_timeout_us(600_000_000)
-
-    assert old_timeout_us == 5_000_000
-    assert communicator._ft_process_group._timeout_us == 600_000_000

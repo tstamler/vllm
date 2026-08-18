@@ -261,6 +261,55 @@ def test_decorator_breaks_when_invoked_inside_capture(cuda_capture_stream):
     assert torch.equal(x, torch.full((4,), 15.0, device="cuda"))
 
 
+def test_ft_moe_break_skips_collective_during_capture(monkeypatch, cuda_capture_stream):
+    """MoE graph construction initializes persistent output without running
+    the distributed transaction; replay runs the transaction eagerly."""
+    from vllm.model_executor.layers.fused_moe.runner import moe_runner
+
+    calls = {"real_moe": 0}
+
+    def fake_moe_forward(
+        hidden_states,
+        router_logits,
+        shared_experts_input,
+        input_ids,
+        layer_name,
+        hidden_dim_unpadded,
+    ):
+        calls["real_moe"] += 1
+        return hidden_states * 3
+
+    monkeypatch.setattr(moe_runner, "_moe_forward", fake_moe_forward)
+
+    hidden_states = torch.full((4,), 2.0, device="cuda")
+    router_logits = torch.empty((4,), device="cuda")
+    output = torch.empty_like(hidden_states)
+    downstream = torch.empty_like(hidden_states)
+
+    cap = moe_runner.BreakableCUDAGraphCapture()
+    with cap:
+        hidden_states.add_(0.0)
+        moe_runner._moe_forward_with_output(
+            hidden_states,
+            router_logits,
+            None,
+            None,
+            output,
+            "unused",
+            0,
+        )
+        downstream.copy_(output + 1)
+
+    torch.accelerator.synchronize()
+    assert calls["real_moe"] == 0
+
+    cap.replay()
+    torch.accelerator.synchronize()
+    assert calls["real_moe"] == 1
+    assert torch.equal(output, torch.full_like(output, 6.0))
+    assert torch.equal(downstream, torch.full_like(downstream, 7.0))
+
+
 # ---------------------------------------------------------------------------
 # Replay ordering
 # ---------------------------------------------------------------------------

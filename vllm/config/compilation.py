@@ -761,14 +761,6 @@ class CompilationConfig:
         "vllm::deepseek_v4_attention",
     ]
 
-    # FT EP failure recovery checks collective status and may retry dispatch
-    # with a smaller active mask. Keep the complete MoE transaction eager so
-    # incomplete routing payloads cannot reach the expert kernels.
-    _ft_failure_recovery_moe_ops: ClassVar[list[str]] = [
-        "vllm::moe_forward",
-        "vllm::moe_forward_shared",
-    ]
-
     def compute_hash(self) -> str:
         """
         Provide a hash that uniquely identifies all the configs
@@ -1192,23 +1184,6 @@ class CompilationConfig:
                     "Setting cudagraph_mode to FULL."
                 )
                 self.cudagraph_mode = CUDAGraphMode.FULL
-
-        if (
-            envs.VLLM_USE_FT_NCCL_EP
-            and envs.VLLM_FT_SURVIVE_WORKER_FAILURE
-            and self.cudagraph_mode != CUDAGraphMode.NONE
-        ):
-            assert self.splitting_ops is not None
-            for op in self._ft_failure_recovery_moe_ops:
-                if op not in self.splitting_ops:
-                    self.splitting_ops.append(op)
-            if self.cudagraph_mode != CUDAGraphMode.PIECEWISE:
-                logger.warning_once(
-                    "FT NCCL EP failure recovery requires the MoE transaction "
-                    "to run outside CUDA graph capture. Setting cudagraph_mode "
-                    "to PIECEWISE."
-                )
-                self.cudagraph_mode = CUDAGraphMode.PIECEWISE
 
         # Disable CUDA graphs for DeepEP high-throughput since its not CG compatible
         if (
