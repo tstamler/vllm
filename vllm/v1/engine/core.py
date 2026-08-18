@@ -1865,8 +1865,7 @@ class DPEngineCoreProc(EngineCoreProc):
                     pass
                 elif not local_unfinished_reqs and not self.engines_running:
                     # All engines are idle.
-                    if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-                        continue
+                    continue
                 else:
                     # We are in a running state and so must execute a dummy pass
                     # if the model didn't execute any ready requests.
