@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path)
     parser.add_argument("--smoothing-seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--client-smoothing-seconds",
+        type=float,
+        default=15.0,
+        help="Longer window for completion-based client token throughput.",
+    )
     parser.add_argument("--steady-window", type=float, default=60.0)
     parser.add_argument("--pre-guard", type=float, default=5.0)
     parser.add_argument("--include-prompt", action="store_true")
@@ -157,7 +163,9 @@ def main() -> None:
     client_times, client_rates, client_records = read_client_throughput(
         args.client_log, rows[0]["timestamp"]
     )
-    client_smooth = rolling_mean(client_times, client_rates, args.smoothing_seconds)
+    client_smooth = rolling_mean(
+        client_times, client_rates, args.client_smoothing_seconds
+    )
 
     relative_generation = [timestamp - origin for timestamp in generation_times]
     relative_prompt = [timestamp - origin for timestamp in prompt_times]
@@ -186,7 +194,10 @@ def main() -> None:
             color="#1f77b4",
             linewidth=1.8,
             linestyle="--",
-            label="Successful client output tok/s",
+            label=(
+                "Successful client output tok/s "
+                f"({args.client_smoothing_seconds:g} s mean)"
+            ),
         )
     if args.include_prompt:
         axis.plot(
@@ -214,6 +225,7 @@ def main() -> None:
     summary: dict[str, object] = {
         "origin_unix": origin,
         "smoothing_seconds": args.smoothing_seconds,
+        "client_smoothing_seconds": args.client_smoothing_seconds,
     }
     if kill_event is not None:
         kill_time = float(kill_event["timestamp"])

@@ -315,6 +315,26 @@ def test_moe_splitting_ops_deepep_ht_inductor_partition():
     ]
 
 
+def test_ft_failure_recovery_uses_piecewise_moe_splits(monkeypatch):
+    monkeypatch.setenv("VLLM_USE_FT_NCCL_EP", "1")
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+
+    compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE,
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+    )
+    compilation_config.set_splitting_ops_for_v1(
+        all2all_backend="allgather_reducescatter",
+        data_parallel_size=4,
+    )
+
+    assert compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert compilation_config.splitting_ops_contain_attention()
+    assert compilation_config.splitting_ops is not None
+    assert "vllm::moe_forward" in compilation_config.splitting_ops
+    assert "vllm::moe_forward_shared" in compilation_config.splitting_ops
+
+
 def test_should_split():
     import torch
 

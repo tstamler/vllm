@@ -11,6 +11,11 @@ FAILURE_AT_SECONDS=${FAILURE_AT_SECONDS:-180}
 CONCURRENCY=${CONCURRENCY:-64}
 REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-120}
 MAX_TOKENS=${MAX_TOKENS:-128}
+STARTUP_RAMP_SECONDS=${STARTUP_RAMP_SECONDS:-10}
+REQUEST_JITTER_SECONDS=${REQUEST_JITTER_SECONDS:-0.25}
+LOAD_SEED=${LOAD_SEED:-0}
+SERVER_SMOOTHING_SECONDS=${SERVER_SMOOTHING_SECONDS:-5}
+CLIENT_SMOOTHING_SECONDS=${CLIENT_SMOOTHING_SECONDS:-15}
 OUTPUT_DIR=${OUTPUT_DIR:-/tmp/ft-recovery-$(date +%Y%m%d-%H%M%S)}
 WORKER_PATTERN=${WORKER_PATTERN:-Worker_DP1_TP1}
 
@@ -54,7 +59,10 @@ failure_pid=$!
   --duration "${DURATION_SECONDS}" \
   --concurrency "${CONCURRENCY}" \
   --request-timeout "${REQUEST_TIMEOUT_SECONDS}" \
-  --max-tokens "${MAX_TOKENS}"
+  --max-tokens "${MAX_TOKENS}" \
+  --startup-ramp "${STARTUP_RAMP_SECONDS}" \
+  --request-jitter "${REQUEST_JITTER_SECONDS}" \
+  --seed "${LOAD_SEED}"
 
 wait "${collector_pid}"
 collector_pid=""
@@ -67,7 +75,9 @@ failure_pid=""
   --client-log "${OUTPUT_DIR}/client.jsonl" \
   --events "${OUTPUT_DIR}/events.csv" \
   --output "${OUTPUT_DIR}/throughput.png" \
-  --summary "${OUTPUT_DIR}/summary.json"
+  --summary "${OUTPUT_DIR}/summary.json" \
+  --smoothing-seconds "${SERVER_SMOOTHING_SECONDS}" \
+  --client-smoothing-seconds "${CLIENT_SMOOTHING_SECONDS}"
 
 printf 'Graph: %s/throughput.png\n' "${OUTPUT_DIR}"
 printf 'Summary: %s/summary.json\n' "${OUTPUT_DIR}"

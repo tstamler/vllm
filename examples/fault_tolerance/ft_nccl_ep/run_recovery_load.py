@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout", type=float, default=120.0)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument(
+        "--startup-ramp",
+        type=float,
+        default=10.0,
+        help="Seconds over which client workers begin submitting requests.",
+    )
+    parser.add_argument(
+        "--request-jitter",
+        type=float,
+        default=0.25,
+        help="Maximum delay in seconds before each subsequent request.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
         "--prompt-template",
         default="Count upward from one. Recovery request {request_id}.",
         help="May contain {request_id} and {worker_id} placeholders.",
@@ -36,6 +50,8 @@ def parse_args() -> argparse.Namespace:
 async def run_load(args: argparse.Namespace) -> None:
     if args.duration <= 0 or args.concurrency <= 0:
         raise ValueError("duration and concurrency must be positive")
+    if args.startup_ramp < 0 or args.request_jitter < 0:
+        raise ValueError("startup ramp and request jitter must be non-negative")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     timeout = aiohttp.ClientTimeout(total=args.request_timeout)
@@ -62,7 +78,18 @@ async def run_load(args: argparse.Namespace) -> None:
 
         async def worker(worker_id: int) -> None:
             nonlocal request_sequence
+            rng = random.Random(args.seed + worker_id)
+            if args.startup_ramp > 0 and args.concurrency > 1:
+                await asyncio.sleep(
+                    args.startup_ramp * worker_id / (args.concurrency - 1)
+                )
+            first_request = True
             while time.monotonic() < deadline:
+                if not first_request and args.request_jitter > 0:
+                    await asyncio.sleep(rng.uniform(0.0, args.request_jitter))
+                    if time.monotonic() >= deadline:
+                        break
+                first_request = False
                 request_sequence += 1
                 request_id = f"recovery-{worker_id}-{request_sequence}"
                 payload = {
@@ -119,12 +146,14 @@ async def run_load(args: argparse.Namespace) -> None:
 
         async def report_progress() -> None:
             previous = dict(counters)
+            previous_time = time.monotonic()
             while time.monotonic() < deadline:
                 await asyncio.sleep(args.progress_interval)
+                now = time.monotonic()
                 successes = counters["success"] - previous["success"]
                 failures = counters["failure"] - previous["failure"]
                 tokens = counters["output_tokens"] - previous["output_tokens"]
-                rate = tokens / args.progress_interval
+                rate = tokens / max(now - previous_time, 1e-9)
                 elapsed = time.monotonic() - start_mono
                 print(
                     f"elapsed={elapsed:.1f}s success={successes} "
@@ -132,6 +161,7 @@ async def run_load(args: argparse.Namespace) -> None:
                     flush=True,
                 )
                 previous = dict(counters)
+                previous_time = now
 
         try:
             workers = [
