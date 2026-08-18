@@ -13,6 +13,7 @@ export PYTHONPATH="${FT_COLLECTIVE_PYTHON}${PYTHONPATH:+:${PYTHONPATH}}"
 export VLLM_USE_FT_NCCL_COMMUNICATOR=1
 export VLLM_USE_FT_NCCL_EP=1
 export VLLM_FT_SURVIVE_WORKER_FAILURE=1
+export VLLM_FT_STARTUP_TIMEOUT_US=${VLLM_FT_STARTUP_TIMEOUT_US:-600000000}
 export FT_NCCL_MAX_COUNT=${FT_NCCL_MAX_COUNT:-4194304}
 # vLLM prepares the collective barrier's symmetric windows during startup,
 # before a worker can be removed from the communicator.

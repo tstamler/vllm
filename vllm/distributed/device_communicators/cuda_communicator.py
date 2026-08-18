@@ -695,6 +695,23 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
         return active_mask
 
+    def set_ft_timeout_us(self, timeout_us: int) -> int:
+        """Set the FT kernel timeout, returning the previous value."""
+        if timeout_us <= 0:
+            raise ValueError("FT NCCL timeout must be positive.")
+        ft_process_group = self._get_ft_process_group()
+        old_timeout_us = getattr(ft_process_group, "_timeout_us", None)
+        if old_timeout_us is None:
+            raise RuntimeError("FTProcessGroup does not expose its kernel timeout.")
+        setter = getattr(ft_process_group, "set_timeout_us", None)
+        if setter is not None:
+            setter(timeout_us)
+        else:
+            # Compatibility with FTProcessGroup versions predating the public
+            # setter. Collective launches read this value for every operation.
+            ft_process_group._timeout_us = timeout_us
+        return int(old_timeout_us)
+
     def ft_sync_dp_batch_sizes(
         self, local_num_tokens: int, dp_size: int, cudagraph_mode: int
     ) -> tuple[torch.Tensor, int]:

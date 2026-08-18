@@ -327,9 +327,40 @@ class Worker(WorkerBase):
 
             self.model_runner = GPUModelRunnerV1(self.vllm_config, self.device)
 
+        self._ft_serving_timeouts = self._install_ft_startup_timeout()
+
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
+
+    def _install_ft_startup_timeout(self) -> list[tuple[Any, int]]:
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return []
+        startup_timeout_us = envs.VLLM_FT_STARTUP_TIMEOUT_US
+        saved_timeouts: list[tuple[Any, int]] = []
+        seen: set[int] = set()
+        for group in (get_ep_group(), get_tp_group()):
+            communicator = group.device_communicator
+            if communicator is None or id(communicator) in seen:
+                continue
+            seen.add(id(communicator))
+            setter = getattr(communicator, "set_ft_timeout_us", None)
+            if setter is not None:
+                saved_timeouts.append((communicator, setter(startup_timeout_us)))
+        if saved_timeouts:
+            logger.info_once(
+                "Using a %g second FT NCCL timeout during model warmup and "
+                "CUDA graph capture.",
+                startup_timeout_us / 1e6,
+            )
+        return saved_timeouts
+
+    def _restore_ft_serving_timeout(self) -> None:
+        for communicator, timeout_us in self._ft_serving_timeouts:
+            communicator.set_ft_timeout_us(timeout_us)
+        if self._ft_serving_timeouts:
+            logger.info_once("Restored the configured FT NCCL serving timeout.")
+        self._ft_serving_timeouts = []
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
@@ -719,6 +750,8 @@ class Worker(WorkerBase):
         )
 
         activate_triton_jit_monitor()
+
+        self._restore_ft_serving_timeout()
 
         return CompilationTimes(
             language_model=self.compilation_config.compilation_time,
