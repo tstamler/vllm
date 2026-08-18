@@ -5,6 +5,7 @@ import torch
 
 from vllm.distributed.device_communicators.cuda_communicator import (
     CudaCommunicator,
+    _unpack_ft_dp_metadata,
     _unpack_ft_rank_values,
 )
 
@@ -20,6 +21,39 @@ def test_unpack_ft_rank_values_restores_inactive_slot():
         torch.tensor([8, 8, 4, 0, 12, 12, 2, 2], dtype=torch.int32),
     )
 
+
+def test_unpack_ft_dp_metadata_pads_active_graph_ranks():
+    tokens, cudagraph_mode = _unpack_ft_dp_metadata(
+        torch.tensor(
+            [8, 1, 8, 1, 12, 1, 12, 1, 4, 1, 4, 1],
+            dtype=torch.int32,
+        ),
+        torch.tensor([2, 2, 0, 0, 2, 2, 2, 2], dtype=torch.int32),
+        dp_size=4,
+    )
+
+    assert cudagraph_mode == 1
+    torch.testing.assert_close(
+        tokens,
+        torch.tensor([12, 0, 12, 12], dtype=torch.int32),
+    )
+
+
+def test_unpack_ft_dp_metadata_preserves_eager_sizes():
+    tokens, cudagraph_mode = _unpack_ft_dp_metadata(
+        torch.tensor(
+            [8, 0, 8, 0, 12, 1, 12, 1, 4, 1, 4, 1],
+            dtype=torch.int32,
+        ),
+        torch.tensor([2, 2, 0, 0, 2, 2, 2, 2], dtype=torch.int32),
+        dp_size=4,
+    )
+
+    assert cudagraph_mode == 0
+    torch.testing.assert_close(
+        tokens,
+        torch.tensor([8, 0, 12, 4], dtype=torch.int32),
+    )
 
 def test_prepare_ft_convergence_allocates_legacy_buffers(monkeypatch):
     class FakeProcessGroup:

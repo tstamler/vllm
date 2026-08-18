@@ -44,6 +44,41 @@ def _unpack_ft_rank_values(
     return rank_values
 
 
+def _unpack_ft_dp_metadata(
+    packed: torch.Tensor, recv_counts: torch.Tensor, dp_size: int
+) -> tuple[torch.Tensor, int]:
+    """Restore FT DP token counts and synchronize the CUDA graph mode."""
+    counts_cpu = recv_counts.cpu()
+    if torch.any((counts_cpu != 0) & (counts_cpu != 2)):
+        raise RuntimeError(
+            f"Expected zero or two FT metadata values per rank, got {counts_cpu}."
+        )
+    world_size = counts_cpu.numel()
+    if world_size % dp_size != 0:
+        raise RuntimeError(
+            f"EP world size {world_size} is not divisible by DP size {dp_size}."
+        )
+
+    responding_ranks = counts_cpu == 2
+    num_responders = int(responding_ranks.sum().item())
+    if num_responders == 0:
+        raise RuntimeError("FT DP metadata exchange received no responses.")
+    rank_metadata = torch.zeros((world_size, 2), dtype=torch.int32)
+    rank_metadata[responding_ranks] = packed[: num_responders * 2].view(
+        num_responders, 2
+    ).cpu()
+
+    replicas_per_dp = world_size // dp_size
+    dp_responders = responding_ranks.view(dp_size, replicas_per_dp).any(dim=1)
+    tokens_across_dp = rank_metadata[:, 0].view(dp_size, replicas_per_dp).amax(dim=1)
+    synced_cudagraph_mode = int(rank_metadata[responding_ranks, 1].min().item())
+
+    if synced_cudagraph_mode != 0:
+        max_num_tokens = int(tokens_across_dp.max().item())
+        tokens_across_dp[dp_responders] = max_num_tokens
+    return tokens_across_dp, synced_cudagraph_mode
+
+
 class CudaCommunicator(DeviceCommunicatorBase):
     def __init__(
         self,
@@ -661,9 +696,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         return active_mask
 
     def ft_sync_dp_batch_sizes(
-        self, local_num_tokens: int, dp_size: int
-    ) -> torch.Tensor:
-        """Exchange DP token counts over the failure-tolerant EP group."""
+        self, local_num_tokens: int, dp_size: int, cudagraph_mode: int
+    ) -> tuple[torch.Tensor, int]:
+        """Exchange DP token counts and CUDA graph mode over the FT EP group."""
         if not self._should_use_ft_nccl_ep_communicator():
             raise RuntimeError("FT DP batch-size sync requires the FT NCCL EP path.")
         if self.world_size % dp_size != 0:
@@ -674,45 +709,42 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         ft_process_group = self._get_ft_process_group()
         for _ in range(self.world_size):
-            local_count = torch.tensor(
-                [local_num_tokens], dtype=torch.int32, device=self.device
+            local_metadata = torch.tensor(
+                [local_num_tokens, cudagraph_mode],
+                dtype=torch.int32,
+                device=self.device,
             )
             staging = self._get_ft_native_staging_view(
-                (1,),
-                local_count.dtype,
-                local_count.device,
+                (2,),
+                local_metadata.dtype,
+                local_metadata.device,
                 "all-gatherv",
-                1,
-                1,
+                2,
+                2,
             )
             if staging is None:
-                raise RuntimeError("FT NCCL could not exchange DP batch sizes.")
-            self._copy_to_ft_staging(staging, local_count, ft_process_group)
+                raise RuntimeError("FT NCCL could not exchange DP batch metadata.")
+            self._copy_to_ft_staging(staging, local_metadata, ft_process_group)
             packed = torch.zeros(
-                self.world_size,
-                dtype=local_count.dtype,
-                device=local_count.device,
+                self.world_size * 2,
+                dtype=local_metadata.dtype,
+                device=local_metadata.device,
             )
             work, recv_counts = ft_process_group.all_gatherv(
                 staging,
                 packed,
-                1,
-                1,
+                2,
+                2,
             )
             work.wait()
 
             # The count exchange defines the shape of the whole forward pass.
             # Complete it before accepting the metadata, but only once per step.
-            torch.cuda.current_stream(local_count.device).synchronize()
+            torch.cuda.current_stream(local_metadata.device).synchronize()
             status = ft_process_group.get_error()
             if status == self._ft_ok_status:
                 ft_process_group.clear_error()
-                rank_values = _unpack_ft_rank_values(packed, recv_counts)
-
-                # EP ranks are ordered with all local TP/PCP replicas for one DP
-                # rank adjacent. Replicas report the same pre-SP token count.
-                replicas_per_dp = self.world_size // dp_size
-                return rank_values.view(dp_size, replicas_per_dp).amax(dim=1)
+                return _unpack_ft_dp_metadata(packed, recv_counts, dp_size)
 
             result_mask = ft_process_group.get_result_mask()
             old_mask = ft_process_group.get_active_mask()

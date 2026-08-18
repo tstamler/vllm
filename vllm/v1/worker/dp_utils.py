@@ -127,12 +127,6 @@ def _synchronize_dp_ranks(
     assert num_tokens_padded >= num_tokens_unpadded
 
     if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-        if cudagraph_mode != 0:
-            raise RuntimeError(
-                "FT worker-failure survival currently requires --enforce-eager; "
-                "cross-DP CUDA graph coordination is unavailable after a worker "
-                "failure."
-            )
         communicator = get_ep_group().device_communicator
         sync_batch_sizes = getattr(
             communicator, "ft_sync_dp_batch_sizes", None
@@ -142,11 +136,12 @@ def _synchronize_dp_ranks(
                 "FT worker-failure survival requires an EP communicator with "
                 "ft_sync_dp_batch_sizes()."
             )
-        num_tokens_across_dp = sync_batch_sizes(
+        num_tokens_across_dp, synced_cudagraph_mode = sync_batch_sizes(
             num_tokens_padded,
             parallel_config.data_parallel_size,
+            cudagraph_mode,
         )
-        return False, num_tokens_across_dp, cudagraph_mode
+        return False, num_tokens_across_dp, synced_cudagraph_mode
 
     # Coordinate between the DP ranks via an All Reduce
     # to determine the total number of tokens that each rank
