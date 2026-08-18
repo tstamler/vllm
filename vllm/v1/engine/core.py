@@ -1849,21 +1849,10 @@ class DPEngineCoreProc(EngineCoreProc):
             if self._tp_degraded:
                 executed = False
             else:
-                try:
-                    executed = self._process_engine_step()
-                except Exception:
-                    has_dead_workers = getattr(
-                        self.model_executor, "has_dead_workers", lambda: False
-                    )
-                    if not has_dead_workers():
-                        raise
-                    logger.exception(
-                        "Model step was interrupted by a worker death; "
-                        "withdrawing DP rank %d.",
-                        self.dp_rank,
-                    )
-                    self._maybe_handle_own_tp_degradation()
-                    executed = False
+                completed, result = self._run_with_ft_worker_death_guard(
+                    "model step", self._process_engine_step
+                )
+                executed = result if completed else False
             self._maybe_publish_request_counts()
 
             local_unfinished_reqs = self.scheduler.has_unfinished_requests()
@@ -1881,7 +1870,9 @@ class DPEngineCoreProc(EngineCoreProc):
                 else:
                     # We are in a running state and so must execute a dummy pass
                     # if the model didn't execute any ready requests.
-                    self.execute_dummy_batch()
+                    self._run_with_ft_worker_death_guard(
+                        "dummy batch", self.execute_dummy_batch
+                    )
 
             # 3) All-reduce operation to determine global unfinished reqs.
             self.engines_running = self._has_global_unfinished_reqs(
@@ -1909,6 +1900,26 @@ class DPEngineCoreProc(EngineCoreProc):
                 self.step_counter = 0
 
         raise SystemExit
+
+    def _run_with_ft_worker_death_guard(
+        self, operation: str, action: Callable[[], _R]
+    ) -> tuple[bool, _R | None]:
+        """Withdraw this DP engine if a worker dies during model work."""
+        try:
+            return True, action()
+        except Exception:
+            has_dead_workers = getattr(
+                self.model_executor, "has_dead_workers", lambda: False
+            )
+            if not has_dead_workers():
+                raise
+            logger.exception(
+                "%s was interrupted by a worker death; withdrawing DP rank %d.",
+                operation.capitalize(),
+                self.dp_rank,
+            )
+            self._maybe_handle_own_tp_degradation()
+            return False, None
 
     def _maybe_handle_own_tp_degradation(self) -> None:
         dead_workers = getattr(self.model_executor, "_dead_worker_ranks", None)
@@ -1971,10 +1982,7 @@ class DPEngineCoreProc(EngineCoreProc):
         # one engine to start extra dummy forwards after another has paused can
         # make healthy EP ranks miss a collective and look failed.
         self.step_counter += 1
-        if (
-            not envs.VLLM_FT_SURVIVE_WORKER_FAILURE
-            and self.step_counter % 32 != 0
-        ):
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE and self.step_counter % 32 != 0:
             return True
 
         has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(

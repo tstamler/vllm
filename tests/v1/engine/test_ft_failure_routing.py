@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from vllm.v1.engine.core import DPEngineCoreProc
 from vllm.v1.engine.core_client import DPLBAsyncMPClient
 
 
@@ -39,3 +41,32 @@ def test_dplb_rejects_explicit_degraded_engine():
 
     with pytest.raises(RuntimeError, match="no longer serving"):
         client.get_core_engine_for_request(_make_request(data_parallel_rank=1))
+
+
+def test_dp_engine_withdraws_when_worker_dies_during_dummy_batch():
+    core = object.__new__(DPEngineCoreProc)
+    core.dp_rank = 1
+    core.model_executor = SimpleNamespace(has_dead_workers=lambda: True)
+    core._maybe_handle_own_tp_degradation = Mock()
+
+    def fail_dummy_batch():
+        raise RuntimeError("worker died during RPC")
+
+    completed, result = core._run_with_ft_worker_death_guard(
+        "dummy batch", fail_dummy_batch
+    )
+
+    assert not completed
+    assert result is None
+    core._maybe_handle_own_tp_degradation.assert_called_once_with()
+
+
+def test_dp_engine_propagates_non_worker_dummy_batch_failure():
+    core = object.__new__(DPEngineCoreProc)
+    core.model_executor = SimpleNamespace(has_dead_workers=lambda: False)
+
+    def fail_dummy_batch():
+        raise RuntimeError("unrelated failure")
+
+    with pytest.raises(RuntimeError, match="unrelated failure"):
+        core._run_with_ft_worker_death_guard("dummy batch", fail_dummy_batch)
