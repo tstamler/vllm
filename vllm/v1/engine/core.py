@@ -1834,7 +1834,6 @@ class DPEngineCoreProc(EngineCoreProc):
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
             self._maybe_handle_own_tp_degradation()
-            self._maybe_install_ft_membership_after_failure()
             # Publish request counts before and after GPU step to ensure freshness.
             self._maybe_publish_request_counts()
 
@@ -1866,7 +1865,8 @@ class DPEngineCoreProc(EngineCoreProc):
                     pass
                 elif not local_unfinished_reqs and not self.engines_running:
                     # All engines are idle.
-                    continue
+                    if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+                        continue
                 else:
                     # We are in a running state and so must execute a dummy pass
                     # if the model didn't execute any ready requests.
@@ -1944,24 +1944,11 @@ class DPEngineCoreProc(EngineCoreProc):
         errored = self.scheduler.finish_requests(None, RequestStatus.FINISHED_ERROR)
         self._send_error_outputs(errored)
 
-    def _maybe_install_ft_membership_after_failure(self) -> None:
-        """Install one globally aligned EP mask per observed DP failure."""
-        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-            return
-        failures = tuple(
-            rank
-            for rank in range(self.dp_size)
-            if self.dp_store.check([f"ft_worker_failure/{rank}"])
-        )
+    def _install_ft_membership_after_failure(self, failures: tuple[int, ...]) -> None:
+        """Install an EP mask agreed by the ordered DP-state reduction."""
         if not failures or failures == self._ft_installed_failures:
             return
 
-        # Engine processes remain alive after a worker dies. Rendezvous them on
-        # their CPU group before issuing the worker RPC so every surviving EP
-        # rank enters ft_converge() once, in the same generation.
-        import torch.distributed as dist
-
-        dist.barrier(group=self.dp_group)
         logger.warning(
             "Installing framework-managed FT EP membership after worker "
             "failure in DP rank(s) %s.",
@@ -1985,11 +1972,21 @@ class DPEngineCoreProc(EngineCoreProc):
         if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE and self.step_counter % 32 != 0:
             return True
 
-        has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
-            self.dp_group,
-            has_unfinished=local_unfinished,
-            pending_pause=self.pending_pause,
-        )
+        if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            failed_dp_rank = self.dp_rank if self._tp_degraded else None
+            has_unfinished, pause_consensus, failures = ParallelConfig.sync_ft_dp_state(
+                self.dp_group,
+                has_unfinished=local_unfinished,
+                pending_pause=self.pending_pause,
+                failed_dp_rank=failed_dp_rank,
+            )
+            self._install_ft_membership_after_failure(failures)
+        else:
+            has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
+                self.dp_group,
+                has_unfinished=local_unfinished,
+                pending_pause=self.pending_pause,
+            )
 
         if pause_consensus:
             self.ignore_start_dp_wave = True

@@ -697,6 +697,33 @@ class ParallelConfig:
         return has_unfinished_global, pause_count == dp_size
 
     @staticmethod
+    def sync_ft_dp_state(
+        dp_group: ProcessGroup,
+        has_unfinished: bool,
+        pending_pause: bool,
+        failed_dp_rank: int | None,
+    ) -> tuple[bool, bool, tuple[int, ...]]:
+        """Synchronize scheduling state and FT membership in one reduction."""
+        dp_size = dp_group.size()
+        tensor = torch.zeros(2 + dp_size, dtype=torch.int32, device="cpu")
+        tensor[0] = int(has_unfinished)
+        tensor[1] = int(pending_pause)
+        if failed_dp_rank is not None:
+            tensor[2 + failed_dp_rank] = 1
+        torch.distributed.all_reduce(tensor, op=ReduceOp.SUM, group=dp_group)
+
+        pause_count = tensor[1].item()
+        has_unfinished_global = tensor[0].item() > 0 or pause_count % dp_size != 0
+        failed_dp_ranks = tuple(
+            rank for rank, count in enumerate(tensor[2:]) if count.item() > 0
+        )
+        return (
+            has_unfinished_global,
+            pause_count == dp_size,
+            failed_dp_ranks,
+        )
+
+    @staticmethod
     def sync_kv_cache_memory_size(dp_group: ProcessGroup, kv_cache_memory: int) -> int:
         if kv_cache_memory == -1:
             kv_cache_memory = torch.iinfo(torch.int64).max

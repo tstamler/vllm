@@ -70,3 +70,26 @@ def test_dp_engine_propagates_non_worker_dummy_batch_failure():
 
     with pytest.raises(RuntimeError, match="unrelated failure"):
         core._run_with_ft_worker_death_guard("dummy batch", fail_dummy_batch)
+
+
+def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+    core = object.__new__(DPEngineCoreProc)
+    core.dp_rank = 2
+    core.dp_group = object()
+    core.pending_pause = False
+    core.step_counter = 0
+    core._tp_degraded = False
+    core._install_ft_membership_after_failure = Mock()
+
+    sync = Mock(return_value=(True, False, (1,)))
+    monkeypatch.setattr("vllm.v1.engine.core.ParallelConfig.sync_ft_dp_state", sync)
+
+    assert core._has_global_unfinished_reqs(local_unfinished=True)
+    sync.assert_called_once_with(
+        core.dp_group,
+        has_unfinished=True,
+        pending_pause=False,
+        failed_dp_rank=None,
+    )
+    core._install_ft_membership_after_failure.assert_called_once_with((1,))
