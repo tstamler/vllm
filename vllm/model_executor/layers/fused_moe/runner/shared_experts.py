@@ -83,6 +83,12 @@ class SharedExperts:
         # Disable shared expert overlap if:
         #   - we are using eplb with non-default backend, because of correctness issues
         #   - we are using flashinfer with DP, since there nothing to gain
+        #   - MoE runs as an eager break between CUDA graph segments. The
+        #     breakable graph replay contract does not currently represent an
+        #     auxiliary stream that spans those segment boundaries.
+        if envs.VLLM_USE_BREAKABLE_CUDAGRAPH:
+            return True
+
         parallel_config = self._moe_config.moe_parallel_config
         return (
             parallel_config.enable_eplb

@@ -272,7 +272,7 @@ direct_register_custom_op(
 direct_register_custom_op(
     op_name="moe_forward_with_output",
     op_func=_moe_forward_with_output,
-    mutates_args=["hidden_states", "output"],
+    mutates_args=["output"],
     fake_impl=_moe_forward_with_output_fake,
     tags=(torch.Tag.needs_fixed_stride_order,),
 )
