@@ -1,0 +1,2 @@
+timestamp_unix,event,detail
+1787152485.586661367,worker_killed,pid=2266872 pattern=Worker_DP1_TP1
