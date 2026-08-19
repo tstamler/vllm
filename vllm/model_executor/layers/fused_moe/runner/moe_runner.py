@@ -169,7 +169,7 @@ def _moe_forward_shared_fake(
     return shared_out, fused_out
 
 
-@eager_break_during_capture
+@eager_break_during_capture(break_full_graph=True)
 def _moe_forward_with_output(
     hidden_states: torch.Tensor,
     router_logits: torch.Tensor,
@@ -210,7 +210,7 @@ def _moe_forward_with_output_fake(
     return
 
 
-@eager_break_during_capture
+@eager_break_during_capture(break_full_graph=True)
 def _moe_forward_shared_with_output(
     hidden_states: torch.Tensor,
     router_logits: torch.Tensor,
