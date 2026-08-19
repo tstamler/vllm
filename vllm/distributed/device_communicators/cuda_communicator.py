@@ -72,6 +72,11 @@ def _unpack_ft_dp_metadata(
     dp_responders = responding_ranks.view(dp_size, replicas_per_dp).any(dim=1)
     tokens_across_dp = rank_metadata[:, 0].view(dp_size, replicas_per_dp).amax(dim=1)
     synced_cudagraph_mode = int(rank_metadata[responding_ranks, 1].min().item())
+    # Breakable CUDA graphs are captured with the full EP membership. Once a
+    # rank is absent, keep the surviving ranks aligned in eager mode rather
+    # than replaying graph segments around a membership-dependent MoE call.
+    if not bool(responding_ranks.all().item()):
+        synced_cudagraph_mode = 0
 
     if synced_cudagraph_mode != 0:
         max_num_tokens = int(tokens_across_dp.max().item())
@@ -744,7 +749,16 @@ class CudaCommunicator(DeviceCommunicatorBase):
             status = ft_process_group.get_error()
             if status == self._ft_ok_status:
                 ft_process_group.clear_error()
-                return _unpack_ft_dp_metadata(packed, recv_counts, dp_size)
+                tokens_across_dp, synced_cudagraph_mode = _unpack_ft_dp_metadata(
+                    packed, recv_counts, dp_size
+                )
+                if cudagraph_mode != 0 and synced_cudagraph_mode == 0:
+                    logger.warning_once(
+                        "FT EP membership is incomplete for group '%s'; "
+                        "disabling CUDA graph replay on surviving ranks.",
+                        self.unique_name or "<unnamed>",
+                    )
+                return tokens_across_dp, synced_cudagraph_mode
 
             result_mask = ft_process_group.get_result_mask()
             old_mask = ft_process_group.get_active_mask()

@@ -22,7 +22,7 @@ def test_unpack_ft_rank_values_restores_inactive_slot():
     )
 
 
-def test_unpack_ft_dp_metadata_pads_active_graph_ranks():
+def test_unpack_ft_dp_metadata_disables_graph_after_rank_loss():
     tokens, cudagraph_mode = _unpack_ft_dp_metadata(
         torch.tensor(
             [8, 1, 8, 1, 12, 1, 12, 1, 4, 1, 4, 1],
@@ -32,10 +32,10 @@ def test_unpack_ft_dp_metadata_pads_active_graph_ranks():
         dp_size=4,
     )
 
-    assert cudagraph_mode == 1
+    assert cudagraph_mode == 0
     torch.testing.assert_close(
         tokens,
-        torch.tensor([12, 0, 12, 12], dtype=torch.int32),
+        torch.tensor([8, 0, 12, 4], dtype=torch.int32),
     )
 
 
