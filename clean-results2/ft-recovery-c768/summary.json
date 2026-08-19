@@ -1,0 +1,13 @@
+{
+  "origin_unix": 1787168355.816345,
+  "smoothing_seconds": 5.0,
+  "client_smoothing_seconds": 30.0,
+  "pre_failure_output_tok_s_median": 11127.508786493148,
+  "post_failure_output_tok_s_median": 9405.767168595445,
+  "post_to_pre_capacity_ratio": 0.845271601134335,
+  "pre_failure_output_tok_s_p95": 11395.296136684155,
+  "seconds_to_first_zero_throughput": 1.654097080230713,
+  "seconds_to_90pct_post_failure_throughput": 18.654062032699585,
+  "seconds_to_first_successful_response": 12.055777549743652,
+  "failed_requests_after_kill": 188
+}
