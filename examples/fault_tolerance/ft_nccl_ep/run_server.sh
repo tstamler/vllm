@@ -14,6 +14,11 @@ export VLLM_USE_FT_NCCL_COMMUNICATOR=1
 export VLLM_USE_FT_NCCL_EP=1
 export VLLM_FT_SURVIVE_WORKER_FAILURE=1
 export FT_NCCL_MAX_COUNT=${FT_NCCL_MAX_COUNT:-4194304}
+# Keep the FT failure-detection controls visible at the experiment boundary.
+# FT NCCL interprets the timeout in microseconds and requires at least two
+# collective barrier rounds to propagate membership among surviving ranks.
+export FT_TIMEOUT_US=${FT_TIMEOUT_US:-10000000}
+export FT_BARRIER_ROUNDS=${FT_BARRIER_ROUNDS:-3}
 # vLLM prepares the collective barrier's symmetric windows during startup,
 # before a worker can be removed from the communicator.
 export FT_BARRIER_MODE=${FT_BARRIER_MODE:-collective}
@@ -36,5 +41,9 @@ if [[ "${ENFORCE_EAGER}" == "1" ]]; then
 else
   export VLLM_USE_BREAKABLE_CUDAGRAPH=1
 fi
+
+printf 'FT server: timeout_us=%s barrier_mode=%s barrier_rounds=%s eager=%s\n' \
+  "${FT_TIMEOUT_US}" "${FT_BARRIER_MODE}" "${FT_BARRIER_ROUNDS}" \
+  "${ENFORCE_EAGER}"
 
 exec vllm serve "${engine_args[@]}"

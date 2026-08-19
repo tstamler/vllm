@@ -10,6 +10,7 @@ DURATION_SECONDS=${DURATION_SECONDS:-600}
 FAILURE_AT_SECONDS=${FAILURE_AT_SECONDS:-180}
 CONCURRENCY=${CONCURRENCY:-64}
 REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-120}
+MIN_TOKENS=${MIN_TOKENS:-64}
 MAX_TOKENS=${MAX_TOKENS:-128}
 STARTUP_RAMP_SECONDS=${STARTUP_RAMP_SECONDS:-10}
 REQUEST_JITTER_SECONDS=${REQUEST_JITTER_SECONDS:-0.25}
@@ -35,6 +36,9 @@ trap cleanup EXIT INT TERM
 printf 'Writing recovery experiment to %s\n' "${OUTPUT_DIR}"
 printf 'Failure will be injected at +%ss into %s\n' \
   "${FAILURE_AT_SECONDS}" "${WORKER_PATTERN}"
+printf 'Load: concurrency=%s output_tokens=%s..%s request_timeout=%ss\n' \
+  "${CONCURRENCY}" "${MIN_TOKENS}" "${MAX_TOKENS}" \
+  "${REQUEST_TIMEOUT_SECONDS}"
 
 "${PYTHON}" \
   "${ROOT_DIR}/examples/fault_tolerance/ft_nccl_ep/collect_recovery_metrics.py" \
@@ -59,6 +63,7 @@ failure_pid=$!
   --duration "${DURATION_SECONDS}" \
   --concurrency "${CONCURRENCY}" \
   --request-timeout "${REQUEST_TIMEOUT_SECONDS}" \
+  --min-tokens "${MIN_TOKENS}" \
   --max-tokens "${MAX_TOKENS}" \
   --startup-ramp "${STARTUP_RAMP_SECONDS}" \
   --request-jitter "${REQUEST_JITTER_SECONDS}" \

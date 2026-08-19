@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=600.0)
     parser.add_argument("--concurrency", type=int, default=64)
     parser.add_argument("--request-timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--min-tokens",
+        type=int,
+        default=64,
+        help="Minimum randomly selected output length per request.",
+    )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument(
         "--startup-ramp",
@@ -50,6 +56,8 @@ def parse_args() -> argparse.Namespace:
 async def run_load(args: argparse.Namespace) -> None:
     if args.duration <= 0 or args.concurrency <= 0:
         raise ValueError("duration and concurrency must be positive")
+    if args.min_tokens <= 0 or args.max_tokens < args.min_tokens:
+        raise ValueError("token bounds must satisfy 0 < min-tokens <= max-tokens")
     if args.startup_ramp < 0 or args.request_jitter < 0:
         raise ValueError("startup ramp and request jitter must be non-negative")
 
@@ -92,13 +100,15 @@ async def run_load(args: argparse.Namespace) -> None:
                 first_request = False
                 request_sequence += 1
                 request_id = f"recovery-{worker_id}-{request_sequence}"
+                output_length = rng.randint(args.min_tokens, args.max_tokens)
                 payload = {
                     "model": args.model,
                     "prompt": args.prompt_template.format(
                         request_id=request_id, worker_id=worker_id
                     ),
-                    "max_tokens": args.max_tokens,
+                    "max_tokens": output_length,
                     "temperature": 0,
+                    "ignore_eos": True,
                     "stream": False,
                 }
                 started = time.time()
@@ -138,6 +148,7 @@ async def run_load(args: argparse.Namespace) -> None:
                         "latency_s": ended - started,
                         "status": status,
                         "success": success,
+                        "requested_output_tokens": output_length,
                         "prompt_tokens": prompt_tokens,
                         "output_tokens": output_tokens,
                         "error": error_text,
