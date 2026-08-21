@@ -17,6 +17,11 @@ being restarted. The full sequence is repeated three times by default. Results
 include server and benchmark logs, raw vLLM JSON, GPU topology, repository
 state, and a CSV of median throughput and FT overhead.
 
+The harness launches each server in a separate process group and terminates the
+whole group between repetitions so GPU worker processes cannot retain memory.
+It also waits 10 seconds before starting the next server. The default GPU memory
+utilization is `0.85`, leaving room for FT buffers and CUDA graphs.
+
 On the 8-GPU benchmark host:
 
 ```bash
@@ -36,7 +41,9 @@ WORKLOADS=prefill benchmarks/ft_nccl_no_failure/run_all.sh nccl
 
 Useful overrides include `REPETITIONS`, `MODEL`, `TP_SIZE`, `DP_SIZE`,
 `GPU_MEMORY_UTILIZATION`, `FT_NCCL_MAX_COUNT`, `BENCH_EXTRA_ARGS`, and
-`VLLM_EXTRA_ENGINE_ARGS`. Set `ENFORCE_EAGER=1` only for an explicit eager-mode
-diagnostic. Set `USE_BREAKABLE_CUDAGRAPH=0` only to diagnose vLLM's standard
-compile/graph path; the default matched comparison evaluates breakable CUDA
-graphs for both configurations.
+`VLLM_EXTRA_ENGINE_ARGS`. `SERVER_SHUTDOWN_TIMEOUT_SEC` and
+`SERVER_COOLDOWN_SEC` control cleanup between server launches. Set
+`ENFORCE_EAGER=1` only for an explicit eager-mode diagnostic. Set
+`USE_BREAKABLE_CUDAGRAPH=0` only to diagnose vLLM's standard compile/graph path;
+the default matched comparison evaluates breakable CUDA graphs for both
+configurations.

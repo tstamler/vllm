@@ -23,19 +23,42 @@ fi
 workloads=(${WORKLOADS})
 
 server_pid=""
+server_pgid=""
+server_is_running() {
+  if [[ -n "${server_pgid}" ]]; then
+    ps -eo pgid=,stat= | awk -v pgid="${server_pgid}" \
+      '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+  else
+    kill -0 "${server_pid}" 2>/dev/null
+  fi
+}
+
 cleanup_server() {
-  if [[ -n "${server_pid}" ]] && kill -0 "${server_pid}" 2>/dev/null; then
-    kill "${server_pid}" 2>/dev/null || true
-    for _ in {1..30}; do
-      kill -0 "${server_pid}" 2>/dev/null || break
+  local target="${server_pid}"
+  if [[ -n "${server_pgid}" ]]; then
+    target="-${server_pgid}"
+  fi
+
+  if [[ -n "${server_pid}" ]] && server_is_running; then
+    echo "Stopping server process group ${target}" >&2
+    kill -TERM -- "${target}" 2>/dev/null || true
+    for ((second = 0; second < SERVER_SHUTDOWN_TIMEOUT_SEC; second++)); do
+      server_is_running || break
       sleep 1
     done
-    if kill -0 "${server_pid}" 2>/dev/null; then
-      kill -KILL "${server_pid}" 2>/dev/null || true
+    if server_is_running; then
+      echo "Server did not exit cleanly; killing process group ${target}" >&2
+      kill -KILL -- "${target}" 2>/dev/null || true
     fi
+  fi
+  if [[ -n "${server_pid}" ]]; then
     wait "${server_pid}" 2>/dev/null || true
   fi
   server_pid=""
+  server_pgid=""
+  if ((SERVER_COOLDOWN_SEC > 0)); then
+    sleep "${SERVER_COOLDOWN_SEC}"
+  fi
 }
 trap cleanup_server EXIT INT TERM
 
@@ -53,6 +76,8 @@ write_run_info() {
     echo "gpu_memory_utilization=${GPU_MEMORY_UTILIZATION}"
     echo "enforce_eager=${ENFORCE_EAGER}"
     echo "use_breakable_cudagraph=${USE_BREAKABLE_CUDAGRAPH}"
+    echo "server_shutdown_timeout_sec=${SERVER_SHUTDOWN_TIMEOUT_SEC}"
+    echo "server_cooldown_sec=${SERVER_COOLDOWN_SEC}"
     echo "repetitions=${REPETITIONS}"
     echo "configs=${configs[*]}"
     echo "workloads=${workloads[*]}"
@@ -92,7 +117,14 @@ for ((repetition = 1; repetition <= REPETITIONS; repetition++)); do
   for config in "${configs[@]}"; do
     server_log="${RESULT_DIR}/logs/server-${config}-r${repetition}-${RUN_ID}.log"
     echo "Starting ${config}, repetition ${repetition}; log=${server_log}" >&2
-    "${SCRIPT_DIR}/serve.sh" "${config}" >"${server_log}" 2>&1 &
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "${SCRIPT_DIR}/serve.sh" "${config}" >"${server_log}" 2>&1 &
+      server_pgid=$!
+    else
+      echo "Warning: setsid unavailable; descendant cleanup is best effort" >&2
+      "${SCRIPT_DIR}/serve.sh" "${config}" >"${server_log}" 2>&1 &
+      server_pgid=""
+    fi
     server_pid=$!
     if ! wait_for_server; then
       tail -100 "${server_log}" >&2 || true
