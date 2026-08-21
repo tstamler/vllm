@@ -52,6 +52,7 @@ write_run_info() {
     echo "max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS}"
     echo "gpu_memory_utilization=${GPU_MEMORY_UTILIZATION}"
     echo "enforce_eager=${ENFORCE_EAGER}"
+    echo "use_breakable_cudagraph=${USE_BREAKABLE_CUDAGRAPH}"
     echo "repetitions=${REPETITIONS}"
     echo "configs=${configs[*]}"
     echo "workloads=${workloads[*]}"

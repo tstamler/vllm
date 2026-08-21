@@ -15,13 +15,17 @@ build_engine_args
 
 export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-1}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-1}"
+if is_true "${ENFORCE_EAGER}"; then
+  export VLLM_USE_BREAKABLE_CUDAGRAPH=0
+else
+  export VLLM_USE_BREAKABLE_CUDAGRAPH="${USE_BREAKABLE_CUDAGRAPH}"
+fi
 
 case "${config}" in
   nccl)
     export VLLM_USE_FT_NCCL_COMMUNICATOR=0
     export VLLM_USE_FT_NCCL_EP=0
     export VLLM_FT_SURVIVE_WORKER_FAILURE=0
-    export VLLM_USE_BREAKABLE_CUDAGRAPH=0
     ;;
   ft-nccl)
     if [[ ! -d "${FT_COLLECTIVE_PYTHON}" ]]; then
@@ -33,9 +37,6 @@ case "${config}" in
     export VLLM_USE_FT_NCCL_EP=1
     export VLLM_FT_SURVIVE_WORKER_FAILURE=1
     export FT_NCCL_MAX_COUNT FT_TIMEOUT_US FT_BARRIER_ROUNDS FT_BARRIER_MODE
-    if ! is_true "${ENFORCE_EAGER}"; then
-      export VLLM_USE_BREAKABLE_CUDAGRAPH=1
-    fi
     ;;
   *)
     echo "Unknown config '${config}'; expected nccl or ft-nccl" >&2
@@ -43,8 +44,8 @@ case "${config}" in
     ;;
 esac
 
-printf 'Starting %s: model=%s tp=%s dp=%s eager=%s port=%s\n' \
+printf 'Starting %s: model=%s tp=%s dp=%s eager=%s breakable_graph=%s port=%s\n' \
   "${config}" "${MODEL}" "${TP_SIZE}" "${DP_SIZE}" \
-  "${ENFORCE_EAGER}" "${PORT}" >&2
+  "${ENFORCE_EAGER}" "${VLLM_USE_BREAKABLE_CUDAGRAPH}" "${PORT}" >&2
 cd "${VLLM_ROOT}"
 exec "${VLLM_PYTHON}" -m vllm.entrypoints.cli.main "${ENGINE_ARGS[@]}"
