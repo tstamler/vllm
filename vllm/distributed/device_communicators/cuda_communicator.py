@@ -652,6 +652,34 @@ class CudaCommunicator(DeviceCommunicatorBase):
             )
         return new_mask
 
+    def rejoin_ft_membership(self) -> list[bool] | None:
+        """Re-admit responsive ranks without rebuilding captured CUDA graphs."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return None
+        ft_process_group = self._get_ft_process_group()
+        if not hasattr(ft_process_group, "ft_rejoin"):
+            raise RuntimeError(
+                "FT rank rejoin requires FTProcessGroup.ft_rejoin()."
+            )
+
+        # Rejoin is an infrequent control-plane transition between model steps.
+        # Drain the application stream before changing the device-resident mask;
+        # captured collectives retain the same handle and mask address.
+        torch.cuda.current_stream(self.device).synchronize()
+        with torch.inference_mode(False):
+            old_mask = self._get_ft_active_mask(ft_process_group)
+            new_mask = list(ft_process_group.ft_rejoin())
+            self._ft_active_mask = new_mask
+            ft_process_group.clear_error()
+        if new_mask != old_mask:
+            logger.warning(
+                "FT NCCL membership for group '%s' rejoined from %s to %s.",
+                self.unique_name or "<unnamed>",
+                old_mask,
+                new_mask,
+            )
+        return new_mask
+
     def _get_ft_active_mask(
         self, ft_process_group, refresh: bool = False
     ) -> list[bool]:

@@ -152,12 +152,20 @@ def main() -> None:
     prompt_times, prompt_rates = counter_rates(rows, "prompt")
     prompt_smooth = rolling_mean(prompt_times, prompt_rates, args.smoothing_seconds)
     events = read_events(args.events)
-    kill_event = next(
-        (event for event in events if event["event"] == "worker_killed"), None
+    disruption_event = next(
+        (
+            event
+            for event in events
+            if event["event"] in {"worker_killed", "worker_stalled"}
+        ),
+        None,
+    )
+    rejoin_event = next(
+        (event for event in events if event["event"] == "rejoin_complete"), None
     )
     origin = (
-        float(kill_event["timestamp"])
-        if kill_event is not None
+        float(disruption_event["timestamp"])
+        if disruption_event is not None
         else rows[0]["timestamp"]
     )
     client_times, client_rates, client_records = read_client_throughput(
@@ -227,12 +235,12 @@ def main() -> None:
         "smoothing_seconds": args.smoothing_seconds,
         "client_smoothing_seconds": args.client_smoothing_seconds,
     }
-    if kill_event is not None:
-        kill_time = float(kill_event["timestamp"])
-        pre_start = max(generation_times[0], kill_time - args.steady_window)
-        pre_end = kill_time - args.pre_guard
+    if disruption_event is not None:
+        disruption_time = float(disruption_event["timestamp"])
+        pre_start = max(generation_times[0], disruption_time - args.steady_window)
+        pre_end = disruption_time - args.pre_guard
         post_end = generation_times[-1]
-        post_start = max(kill_time, post_end - args.steady_window)
+        post_start = max(disruption_time, post_end - args.steady_window)
         pre_median = median_in_range(
             generation_times, generation_smooth, pre_start, pre_end
         )
@@ -274,12 +282,12 @@ def main() -> None:
             (
                 timestamp
                 for timestamp, value in zip(generation_times, generation_rates)
-                if timestamp >= kill_time and value == 0
+                if timestamp >= disruption_time and value == 0
             ),
             None,
         )
         summary["seconds_to_first_zero_throughput"] = (
-            zero_timestamp - kill_time if zero_timestamp is not None else None
+            zero_timestamp - disruption_time if zero_timestamp is not None else None
         )
         recovered = None
         if post_median is not None and post_median > 0 and zero_timestamp is not None:
@@ -293,24 +301,60 @@ def main() -> None:
                 None,
             )
         summary["seconds_to_90pct_post_failure_throughput"] = (
-            recovered - kill_time if recovered is not None else None
+            recovered - disruption_time if recovered is not None else None
         )
 
-        successful_after_kill = [
+        successful_after_disruption = [
             float(record["ended_unix"])
             for record in client_records
-            if record.get("success") and float(record["ended_unix"]) >= kill_time
+            if record.get("success")
+            and float(record["ended_unix"]) >= disruption_time
         ]
         summary["seconds_to_first_successful_response"] = (
-            min(successful_after_kill) - kill_time if successful_after_kill else None
+            min(successful_after_disruption) - disruption_time
+            if successful_after_disruption
+            else None
         )
-        summary["failed_requests_after_kill"] = sum(
-            not record.get("success") and float(record["ended_unix"]) >= kill_time
+        failed_requests = sum(
+            not record.get("success")
+            and float(record["ended_unix"]) >= disruption_time
             for record in client_records
         )
+        summary["failed_requests_after_disruption"] = failed_requests
+        if disruption_event["event"] == "worker_killed":
+            summary["failed_requests_after_kill"] = failed_requests
 
-    axis.set_title("vLLM Throughput During FT NCCL Worker-Failure Recovery")
-    axis.set_xlabel("Seconds relative to worker failure" if kill_event else "Seconds")
+        if rejoin_event is not None:
+            rejoin_time = float(rejoin_event["timestamp"])
+            degraded_median = median_in_range(
+                generation_times,
+                generation_smooth,
+                disruption_time + args.pre_guard,
+                rejoin_time - args.pre_guard,
+            )
+            restored_start = min(
+                max(rejoin_time + args.pre_guard, post_end - args.steady_window),
+                post_end,
+            )
+            restored_median = median_in_range(
+                generation_times,
+                generation_smooth,
+                restored_start,
+                post_end,
+            )
+            summary["seconds_to_rejoin_complete"] = rejoin_time - disruption_time
+            summary["degraded_output_tok_s_median"] = degraded_median
+            summary["restored_output_tok_s_median"] = restored_median
+            summary["restored_to_pre_capacity_ratio"] = (
+                restored_median / pre_median
+                if pre_median and restored_median is not None
+                else None
+            )
+
+    axis.set_title("vLLM Throughput During FT NCCL Membership Recovery")
+    axis.set_xlabel(
+        "Seconds relative to disruption" if disruption_event else "Seconds"
+    )
     axis.set_ylabel("Tokens per second")
     axis.set_ylim(bottom=0)
     axis.grid(axis="y", alpha=0.25)

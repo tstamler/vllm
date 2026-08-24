@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from unittest.mock import Mock
+
 import torch
 
 from vllm.distributed.device_communicators.cuda_communicator import (
@@ -8,6 +10,76 @@ from vllm.distributed.device_communicators.cuda_communicator import (
     _unpack_ft_dp_metadata,
     _unpack_ft_rank_values,
 )
+from vllm.v1.worker.gpu_worker import Worker
+
+
+def test_rejoin_ft_membership_refreshes_mask_without_rebuild(monkeypatch):
+    class FakeStream:
+        synchronized = False
+
+        def synchronize(self):
+            self.synchronized = True
+
+    class FakeProcessGroup:
+        cleared = False
+
+        @staticmethod
+        def ft_rejoin():
+            return [True, True]
+
+        def clear_error(self):
+            self.cleared = True
+
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+    stream = FakeStream()
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device=None: stream)
+    process_group = FakeProcessGroup()
+    communicator = object.__new__(CudaCommunicator)
+    communicator.device = torch.device("cuda")
+    communicator.unique_name = "ep:0"
+    communicator._ft_active_mask = [True, False]
+    communicator._get_ft_process_group = lambda: process_group
+
+    assert communicator.rejoin_ft_membership() == [True, True]
+    assert stream.synchronized
+    assert communicator._ft_active_mask == [True, True]
+    assert process_group.cleared
+
+
+def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
+    trigger = tmp_path / "rejoin.trigger"
+    ack_dir = tmp_path / "acks"
+    worker = object.__new__(Worker)
+    worker.rank = 3
+    worker._ft_rejoin_trigger = str(trigger)
+    worker._ft_rejoin_ack_dir = str(ack_dir)
+    worker._ft_rejoin_poll_interval = 0.0
+    worker._ft_rejoin_last_poll = 0.0
+    worker._ft_rejoin_generation = None
+    worker.rejoin_ft_membership = Mock(return_value=[[True, True]])
+
+    trigger.write_text("generation-1\n", encoding="utf-8")
+    worker._maybe_rejoin_ft_membership()
+    worker._maybe_rejoin_ft_membership()
+
+    worker.rejoin_ft_membership.assert_called_once_with()
+    assert (ack_dir / "generation-1.rank-3.ack").exists()
+
+    trigger.write_text("generation-2\n", encoding="utf-8")
+    worker._maybe_rejoin_ft_membership()
+    assert worker.rejoin_ft_membership.call_count == 2
+    assert (ack_dir / "generation-2.rank-3.ack").exists()
+
+    worker.rejoin_ft_membership.return_value = [[True, False]]
+    trigger.write_text("generation-3\n", encoding="utf-8")
+    try:
+        worker._maybe_rejoin_ft_membership()
+    except RuntimeError as error:
+        assert "remained incomplete" in str(error)
+    else:
+        raise AssertionError("An incomplete rejoin must not be acknowledged")
+    assert worker._ft_rejoin_generation == "generation-2"
+    assert not (ack_dir / "generation-3.rank-3.ack").exists()
 
 
 def test_unpack_ft_rank_values_restores_inactive_slot():

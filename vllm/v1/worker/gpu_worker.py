@@ -4,6 +4,7 @@
 
 import gc
 import os
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import timedelta
@@ -154,6 +155,13 @@ class Worker(WorkerBase):
         self.use_v2_model_runner = vllm_config.use_v2_model_runner
         # pending non-blocking PP send work from the previous iteration
         self._pp_send_work: list[Handle] = []
+        self._ft_rejoin_trigger = os.getenv("VLLM_FT_REJOIN_TRIGGER_FILE")
+        self._ft_rejoin_ack_dir = os.getenv("VLLM_FT_REJOIN_ACK_DIR")
+        self._ft_rejoin_poll_interval = float(
+            os.getenv("VLLM_FT_REJOIN_POLL_INTERVAL", "0.1")
+        )
+        self._ft_rejoin_last_poll = 0.0
+        self._ft_rejoin_generation: str | None = None
 
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -782,6 +790,7 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
+        self._maybe_rejoin_ft_membership()
         # ensure any previous non-blocking PP sends are complete
         if self._pp_send_work:
             for handle in self._pp_send_work:
@@ -913,6 +922,58 @@ class Worker(WorkerBase):
             )
         set_active_mask(failed_dp_ranks, dp_size)
 
+    def rejoin_ft_membership(self) -> list[list[bool]]:
+        """Collectively restore responsive EP and TP ranks between model steps."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return []
+        seen: set[int] = set()
+        memberships: list[list[bool]] = []
+        for group in (get_ep_group(), get_tp_group()):
+            communicator = group.device_communicator
+            if communicator is None or id(communicator) in seen:
+                continue
+            seen.add(id(communicator))
+            rejoin = getattr(communicator, "rejoin_ft_membership", None)
+            if rejoin is None:
+                raise RuntimeError(
+                    "FT rank rejoin requires communicator rejoin support."
+                )
+            if membership := rejoin():
+                memberships.append(membership)
+        return memberships
+
+    def _maybe_rejoin_ft_membership(self) -> None:
+        """Poll the experiment trigger and execute each rejoin generation once."""
+        trigger = self._ft_rejoin_trigger
+        if not trigger:
+            return
+        now = time.monotonic()
+        if now - self._ft_rejoin_last_poll < self._ft_rejoin_poll_interval:
+            return
+        self._ft_rejoin_last_poll = now
+        try:
+            with open(trigger, encoding="utf-8") as trigger_file:
+                generation = trigger_file.read().strip()
+        except FileNotFoundError:
+            return
+        if not generation or generation == self._ft_rejoin_generation:
+            return
+
+        logger.warning("Starting FT NCCL rejoin generation %s.", generation)
+        memberships = self.rejoin_ft_membership()
+        if any(not all(membership) for membership in memberships):
+            raise RuntimeError(
+                f"FT NCCL rejoin generation {generation} remained incomplete: "
+                f"{memberships}"
+            )
+        self._ft_rejoin_generation = generation
+        if ack_dir := self._ft_rejoin_ack_dir:
+            os.makedirs(ack_dir, exist_ok=True)
+            ack_path = os.path.join(ack_dir, f"{generation}.rank-{self.rank}.ack")
+            with open(ack_path, "w", encoding="utf-8") as ack_file:
+                ack_file.write(f"rank={self.rank}\n")
+        logger.warning("Completed FT NCCL rejoin generation %s.", generation)
+
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()
 
@@ -970,6 +1031,7 @@ class Worker(WorkerBase):
             self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
+        self._maybe_rejoin_ft_membership()
         num_tokens = getattr(self.model_runner, "uniform_decode_query_len", 1)
         self.model_runner._dummy_run(num_tokens, uniform_decode=True)
 

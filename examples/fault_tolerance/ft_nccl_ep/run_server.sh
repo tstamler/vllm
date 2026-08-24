@@ -22,6 +22,13 @@ export FT_BARRIER_ROUNDS=${FT_BARRIER_ROUNDS:-3}
 # vLLM prepares the collective barrier's symmetric windows during startup,
 # before a worker can be removed from the communicator.
 export FT_BARRIER_MODE=${FT_BARRIER_MODE:-collective}
+# Optional experiment-only control files. The worker polls the trigger between
+# model steps; the FT library updates the device mask without graph recapture.
+export VLLM_FT_REJOIN_TRIGGER_FILE=${VLLM_FT_REJOIN_TRIGGER_FILE:-/tmp/vllm-ft-rejoin.trigger}
+export VLLM_FT_REJOIN_ACK_DIR=${VLLM_FT_REJOIN_ACK_DIR:-/tmp/vllm-ft-rejoin-acks}
+rm -f "${VLLM_FT_REJOIN_TRIGGER_FILE}"
+mkdir -p "${VLLM_FT_REJOIN_ACK_DIR}"
+rm -f "${VLLM_FT_REJOIN_ACK_DIR}"/*.ack
 
 engine_args=(
   "${MODEL}"
