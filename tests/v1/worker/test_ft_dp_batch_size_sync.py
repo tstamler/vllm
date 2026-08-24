@@ -54,6 +54,7 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     worker._ft_rejoin_trigger = str(trigger)
     worker._ft_rejoin_ack_dir = str(ack_dir)
     worker._ft_rejoin_poll_interval = 0.0
+    worker._ft_rejoin_max_attempts = 2
     worker._ft_rejoin_last_poll = 0.0
     worker._ft_rejoin_generation = None
     worker.rejoin_ft_membership = Mock(return_value=[[True, True]])
@@ -70,16 +71,15 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     assert worker.rejoin_ft_membership.call_count == 2
     assert (ack_dir / "generation-2.rank-3.ack").exists()
 
-    worker.rejoin_ft_membership.return_value = [[True, False]]
+    worker.rejoin_ft_membership.side_effect = [
+        [[True, False]],
+        [[True, True]],
+    ]
     trigger.write_text("generation-3\n", encoding="utf-8")
-    try:
-        worker._maybe_rejoin_ft_membership()
-    except RuntimeError as error:
-        assert "remained incomplete" in str(error)
-    else:
-        raise AssertionError("An incomplete rejoin must not be acknowledged")
-    assert worker._ft_rejoin_generation == "generation-2"
-    assert not (ack_dir / "generation-3.rank-3.ack").exists()
+    worker._maybe_rejoin_ft_membership()
+    assert worker._ft_rejoin_generation == "generation-3"
+    assert (ack_dir / "generation-3.rank-3.ack").exists()
+    assert worker.rejoin_ft_membership.call_count == 4
 
 
 def test_worker_rejoins_ep_last_as_global_rendezvous(monkeypatch):

@@ -36,6 +36,9 @@ The experiment sends `SIGSTOP` to one worker, sends `SIGCONT` after
 Every worker calls `ft_rejoin()` once for that generation between model steps.
 TP groups rejoin first and the world-wide EP rejoin runs last, acting as the
 final rendezvous before workers resume model execution.
+An incomplete rejoin round is retried in-place rather than escaping through the
+active `execute_model` RPC. `VLLM_FT_REJOIN_MAX_ATTEMPTS` bounds these retries;
+each attempt can take up to the configured FT timeout.
 The original captured graphs continue to be used because communicator state,
 buffer addresses, graph shapes, and the device-mask address remain stable.
 

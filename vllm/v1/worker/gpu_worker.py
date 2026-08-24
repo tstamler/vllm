@@ -160,6 +160,9 @@ class Worker(WorkerBase):
         self._ft_rejoin_poll_interval = float(
             os.getenv("VLLM_FT_REJOIN_POLL_INTERVAL", "0.1")
         )
+        self._ft_rejoin_max_attempts = int(
+            os.getenv("VLLM_FT_REJOIN_MAX_ATTEMPTS", "12")
+        )
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
 
@@ -964,10 +967,22 @@ class Worker(WorkerBase):
             return
 
         logger.warning("Starting FT NCCL rejoin generation %s.", generation)
-        memberships = self.rejoin_ft_membership()
-        if any(not all(membership) for membership in memberships):
+        for attempt in range(1, self._ft_rejoin_max_attempts + 1):
+            memberships = self.rejoin_ft_membership()
+            if memberships and all(all(mask) for mask in memberships):
+                break
+            logger.warning(
+                "FT NCCL rejoin generation %s attempt %d/%d remained "
+                "incomplete: %s. Retrying before model execution.",
+                generation,
+                attempt,
+                self._ft_rejoin_max_attempts,
+                memberships,
+            )
+        else:
             raise RuntimeError(
-                f"FT NCCL rejoin generation {generation} remained incomplete: "
+                f"FT NCCL rejoin generation {generation} did not restore full "
+                f"membership after {self._ft_rejoin_max_attempts} attempts: "
                 f"{memberships}"
             )
         self._ft_rejoin_generation = generation

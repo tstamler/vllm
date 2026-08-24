@@ -26,6 +26,7 @@ export FT_BARRIER_MODE=${FT_BARRIER_MODE:-collective}
 # model steps; the FT library updates the device mask without graph recapture.
 export VLLM_FT_REJOIN_TRIGGER_FILE=${VLLM_FT_REJOIN_TRIGGER_FILE:-/tmp/vllm-ft-rejoin.trigger}
 export VLLM_FT_REJOIN_ACK_DIR=${VLLM_FT_REJOIN_ACK_DIR:-/tmp/vllm-ft-rejoin-acks}
+export VLLM_FT_REJOIN_MAX_ATTEMPTS=${VLLM_FT_REJOIN_MAX_ATTEMPTS:-12}
 rm -f "${VLLM_FT_REJOIN_TRIGGER_FILE}"
 mkdir -p "${VLLM_FT_REJOIN_ACK_DIR}"
 rm -f "${VLLM_FT_REJOIN_ACK_DIR}"/*.ack
