@@ -1,0 +1,26 @@
+date=2026-08-24T12:09:51-07:00
+run_id=20260824-120951
+model=deepseek-ai/DeepSeek-V2-Lite-Chat
+tp=1
+dp=8
+dtype=bfloat16
+max_model_len=4096
+max_num_batched_tokens=4096
+gpu_memory_utilization=0.90
+enforce_eager=0
+use_breakable_cudagraph=1
+server_shutdown_timeout_sec=60
+server_cooldown_sec=10
+repetitions=3
+configs=nccl ft-nccl
+workloads=decode prefill
+ft_nccl_max_count=16777216
+ft_timeout_us=2000000
+ft_barrier_rounds=2
+ft_barrier_mode=collective
+huggingface_auth_configured=true
+
+a73b30f533f8a79cb406c99f7bfc38dbc3319f24
+?? bench-results-ft-a2av-8gpu/
+?? bench-results-ft-fresh2/
+?? health_test.sh

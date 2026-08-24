@@ -1,0 +1,5 @@
+config,workload,metric,runs,median_tok_s,min_tok_s,max_tok_s,ft_delta_percent
+ft-nccl,decode,output_throughput,3,5415.786,5276.264,5449.047,-32.21
+ft-nccl,prefill,total_token_throughput,3,32421.622,32226.964,33042.512,-13.09
+nccl,decode,output_throughput,3,7988.884,7925.602,8045.117,
+nccl,prefill,total_token_throughput,3,37306.487,36277.010,37359.760,
