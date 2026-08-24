@@ -34,6 +34,8 @@ The experiment sends `SIGSTOP` to one worker, sends `SIGCONT` after
 `STALL_SECONDS`, leaves the reduced membership installed for
 `REJOIN_DELAY_SECONDS`, and then writes a generation token to the rejoin trigger.
 Every worker calls `ft_rejoin()` once for that generation between model steps.
+TP groups rejoin first and the world-wide EP rejoin runs last, acting as the
+final rendezvous before workers resume model execution.
 The original captured graphs continue to be used because communicator state,
 buffer addresses, graph shapes, and the device-mask address remain stable.
 

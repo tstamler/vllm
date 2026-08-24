@@ -82,6 +82,34 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     assert not (ack_dir / "generation-3.rank-3.ack").exists()
 
 
+def test_worker_rejoins_ep_last_as_global_rendezvous(monkeypatch):
+    calls = []
+
+    class FakeCommunicator:
+        def __init__(self, name):
+            self.name = name
+
+        def rejoin_ft_membership(self):
+            calls.append(self.name)
+            return [True, True]
+
+    class FakeGroup:
+        def __init__(self, name):
+            self.device_communicator = FakeCommunicator(name)
+
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu_worker.get_tp_group", lambda: FakeGroup("tp")
+    )
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu_worker.get_ep_group", lambda: FakeGroup("ep")
+    )
+    worker = object.__new__(Worker)
+
+    assert worker.rejoin_ft_membership() == [[True, True], [True, True]]
+    assert calls == ["tp", "ep"]
+
+
 def test_unpack_ft_rank_values_restores_inactive_slot():
     rank_values = _unpack_ft_rank_values(
         torch.tensor([8, 8, 4, 12, 12, 2, 2, -1], dtype=torch.int32),

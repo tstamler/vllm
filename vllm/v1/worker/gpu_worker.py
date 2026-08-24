@@ -885,7 +885,11 @@ class Worker(WorkerBase):
         # Every surviving worker participates in EP, so converge it first
         # while the engine-level rendezvous has all workers closely aligned.
         # TP groups are independent and can converge afterward.
-        for group in (get_ep_group(), get_tp_group()):
+        # Rejoin each independent TP group first. EP is deliberately last: its
+        # full-world rejoin is also the final rendezvous that prevents fast TP
+        # groups from resuming model work while another TP group is still
+        # restoring membership.
+        for group in (get_tp_group(), get_ep_group()):
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
