@@ -1,0 +1,55 @@
+<frozen importlib._bootstrap_external>:1297: FutureWarning: The cuda.cudart module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.runtime module instead.
+<frozen importlib._bootstrap_external>:1297: FutureWarning: The cuda.nvrtc module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.nvrtc module instead.
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 40
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7ff6d1fbcae0>, trust_remote_code=False, seed=0, num_prompts=512, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=256, model='deepseek-ai/DeepSeek-V2-Lite', input_len=128, output_len=1024, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=64, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=['config=ft-nccl', 'workload=decode', 'repetition=3', 'tp=2', 'dp=4', 'enforce_eager=0', 'breakable_cudagraph=1', 'ft_max_count=16777216'], result_dir='bench-results-ft-fresh', result_filename='ft-nccl-decode-r3-20260824-103459.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-b4105f5c-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=1800, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 08-24 11:09:00 [utils.py:90] Sampling input_len from [128, 128] and output_len from [1024, 1024]
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Waiting for endpoint to become up in 1800 seconds
+ |          | 00:00 elapsed, ? remaining |          | 00:00 elapsed, 00:29 remaining |          | 00:41 elapsed, 29752:09:52 remaining
+Initial test run completed.
+Warming up with 64 requests...
+  0%|          | 0/64 [00:00<?, ?it/s]  2%|▏         | 1/64 [00:42<44:33, 42.44s/it]100%|██████████| 64/64 [00:42<00:00,  1.51it/s]
+Warmup run completed.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 256
+  0%|          | 0/512 [00:00<?, ?it/s]  0%|          | 1/512 [01:04<9:10:34, 64.65s/it]  3%|▎         | 17/512 [01:04<22:24,  2.72s/it]  13%|█▎        | 65/512 [01:04<03:58,  1.87it/s] 37%|███▋      | 189/512 [01:05<00:43,  7.38it/s] 50%|█████     | 256/512 [01:15<00:34,  7.38it/s] 50%|█████     | 257/512 [02:10<01:52,  2.28it/s] 63%|██████▎   | 321/512 [02:10<00:56,  3.39it/s]100%|██████████| 512/512 [02:10<00:00,  3.92it/s]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     512       
+Failed requests:                         0         
+Maximum request concurrency:             256       
+Benchmark duration (s):                  130.51    
+Total input tokens:                      65536     
+Total generated tokens:                  524288    
+Request throughput (req/s):              3.92      
+Output token throughput (tok/s):         4017.19   
+Peak output token throughput (tok/s):    6144.00   
+Peak concurrent requests:                444.00    
+Total token throughput (tok/s):          4519.34   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          410.12    
+Median TTFT (ms):                        393.55    
+P99 TTFT (ms):                           624.60    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          63.33     
+Median TPOT (ms):                        63.32     
+P99 TPOT (ms):                           63.78     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           63.33     
+Median ITL (ms):                         63.05     
+P99 ITL (ms):                            86.36     
+==================================================
