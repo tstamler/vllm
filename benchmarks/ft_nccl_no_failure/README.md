@@ -1,7 +1,8 @@
 # FT NCCL No-Failure Performance Evaluation
 
 This harness measures steady-state overhead without injecting a failure. It
-compares matched DeepSeek-V2-Lite TP2/DP4 servers:
+compares matched DeepSeek-V2-Lite-Chat TP1/DP8 servers, matching the topology
+used by the pre-failure-handling evaluation:
 
 - `nccl`: regular NCCL tensor parallelism and vLLM's default AG/RS EP path.
 - `ft-nccl`: the FT NCCL CUDA communicator, native FT AG/RS EP path, worker
@@ -20,7 +21,7 @@ state, and a CSV of median throughput and FT overhead.
 The harness launches each server in a separate process group and terminates the
 whole group between repetitions so GPU worker processes cannot retain memory.
 It also waits 10 seconds before starting the next server. The default GPU memory
-utilization is `0.85`, leaving room for FT buffers and CUDA graphs.
+utilization is `0.90`, matching the earlier evaluation.
 
 On the 8-GPU benchmark host:
 
