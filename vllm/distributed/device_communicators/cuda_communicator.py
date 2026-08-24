@@ -150,6 +150,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_all_gatherv_send_counts: dict[
             tuple[str, int | None, int], torch.Tensor
         ] = {}
+        self._ft_active_mask: list[bool] | None = None
+        self._ft_dp_metadata_host: torch.Tensor | None = None
+        self._ft_dp_metadata_device: torch.Tensor | None = None
+        self._ft_dp_metadata_packed: torch.Tensor | None = None
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -607,6 +611,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                     "FT failure survival requires FTProcessGroup.get_result_mask()."
                 )
             result_mask = ft_process_group.get_result_mask()
+            self._get_ft_active_mask(ft_process_group, refresh=True)
             logger.warning(
                 "FT NCCL collective for group '%s' completed after a peer "
                 "failure; observed responders: %s.",
@@ -635,9 +640,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
         # buffers in ft_converge(); keep them as normal tensors so later calls
         # from execute_dummy_batch() can update them outside inference mode.
         with torch.inference_mode(False):
-            old_mask = ft_process_group.get_active_mask()
+            old_mask = self._get_ft_active_mask(ft_process_group)
             ft_process_group.ft_converge()
-            new_mask = ft_process_group.get_active_mask()
+            new_mask = self._get_ft_active_mask(ft_process_group, refresh=True)
         if new_mask != old_mask:
             logger.warning(
                 "FT NCCL membership for group '%s' changed from %s to %s.",
@@ -646,6 +651,41 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 new_mask,
             )
         return new_mask
+
+    def _get_ft_active_mask(
+        self, ft_process_group, refresh: bool = False
+    ) -> list[bool]:
+        if refresh or self._ft_active_mask is None:
+            self._ft_active_mask = list(ft_process_group.get_active_mask())
+        return self._ft_active_mask
+
+    def _get_ft_dp_metadata_buffers(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._ft_dp_metadata_device is None:
+            with torch.inference_mode(False), torch.device("cpu"):
+                self._ft_dp_metadata_host = torch.empty(
+                    2,
+                    dtype=torch.int32,
+                    device="cpu",
+                    pin_memory=self.device.type == "cuda",
+                )
+                self._ft_dp_metadata_device = torch.empty(
+                    2, dtype=torch.int32, device=self.device
+                )
+                self._ft_dp_metadata_packed = torch.empty(
+                    self.world_size * 2,
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+        assert self._ft_dp_metadata_host is not None
+        assert self._ft_dp_metadata_device is not None
+        assert self._ft_dp_metadata_packed is not None
+        return (
+            self._ft_dp_metadata_host,
+            self._ft_dp_metadata_device,
+            self._ft_dp_metadata_packed,
+        )
 
     def set_ft_ep_active_mask(
         self, failed_dp_ranks: tuple[int, ...], dp_size: int
@@ -679,8 +719,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 "Framework-managed FT EP membership requires "
                 "FTProcessGroup.set_active_mask()."
             )
-        old_mask = ft_process_group.get_active_mask()
+        old_mask = self._get_ft_active_mask(ft_process_group)
         ft_process_group.set_active_mask(active_mask)
+        self._ft_active_mask = active_mask
         # This RPC runs between model steps, after all previous FT work has
         # completed. Do not let a sticky timeout from the interrupted step
         # poison the first collective under the newly installed membership.
@@ -709,11 +750,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         ft_process_group = self._get_ft_process_group()
         for _ in range(self.world_size):
-            local_metadata = torch.tensor(
-                [local_num_tokens, cudagraph_mode],
-                dtype=torch.int32,
-                device=self.device,
-            )
+            metadata_host, local_metadata, packed = self._get_ft_dp_metadata_buffers()
+            metadata_host[0] = local_num_tokens
+            metadata_host[1] = cudagraph_mode
+            local_metadata.copy_(metadata_host, non_blocking=True)
             staging = self._get_ft_native_staging_view(
                 (2,),
                 local_metadata.dtype,
@@ -725,11 +765,6 @@ class CudaCommunicator(DeviceCommunicatorBase):
             if staging is None:
                 raise RuntimeError("FT NCCL could not exchange DP batch metadata.")
             self._copy_to_ft_staging(staging, local_metadata, ft_process_group)
-            packed = torch.zeros(
-                self.world_size * 2,
-                dtype=local_metadata.dtype,
-                device=local_metadata.device,
-            )
             work, recv_counts = ft_process_group.all_gatherv(
                 staging,
                 packed,
@@ -760,10 +795,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 return tokens_across_dp, synced_cudagraph_mode
 
             result_mask = ft_process_group.get_result_mask()
-            old_mask = ft_process_group.get_active_mask()
+            old_mask = self._get_ft_active_mask(ft_process_group)
             with torch.inference_mode(False):
                 ft_process_group.ft_converge()
-            new_mask = ft_process_group.get_active_mask()
+            new_mask = self._get_ft_active_mask(ft_process_group, refresh=True)
             logger.warning(
                 "Retrying FT NCCL DP batch-size exchange for group '%s' after "
                 "status %s; observed responders: %s; membership changed from "
@@ -939,8 +974,13 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._ft_all_gatherv_send_counts[count_key] = device_send_counts
         # Record count initialization in every CUDA graph that uses this cache.
         device_send_counts.fill_(local_size)
+        # A dispatch transaction checks completion before exposing its outputs,
+        # so failed-attempt buffers do not need initialization. Direct gathers
+        # retain zero filling to keep absent-rank data safe after a timeout.
         output_factory = (
-            torch.zeros if envs.VLLM_FT_SURVIVE_WORKER_FAILURE else torch.empty
+            torch.zeros
+            if envs.VLLM_FT_SURVIVE_WORKER_FAILURE and check_status
+            else torch.empty
         )
         output = output_factory(output_shape, dtype=input_.dtype, device=input_.device)
         work, _ = ft_process_group.all_gatherv(
@@ -981,7 +1021,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 f"{len(original_sizes)}."
             )
 
-        active_mask = ft_process_group.get_active_mask()
+        active_mask = self._get_ft_active_mask(ft_process_group)
         for attempt in range(self.world_size):
             if not active_mask[self.rank_in_group]:
                 raise RuntimeError(
@@ -1018,7 +1058,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             old_mask = active_mask
             with torch.inference_mode(False):
                 ft_process_group.ft_converge()
-            active_mask = ft_process_group.get_active_mask()
+            active_mask = self._get_ft_active_mask(ft_process_group, refresh=True)
             logger.warning(
                 "Retrying FT NCCL dispatch for group '%s' after status %s; "
                 "observed responders: %s; membership changed from %s to %s.",
@@ -1185,7 +1225,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if self._should_use_ft_nccl_ep_communicator():
             ft_sizes = sizes
             if envs.VLLM_FT_SURVIVE_WORKER_FAILURE and sizes is not None:
-                active_mask = self._get_ft_process_group().get_active_mask()
+                ft_process_group = self._get_ft_process_group()
+                active_mask = self._get_ft_active_mask(ft_process_group)
                 ft_sizes = [
                     size if active else 0 for size, active in zip(sizes, active_mask)
                 ]
@@ -1268,6 +1309,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def destroy(self):
         self._ft_staging_workspaces.clear()
         self._ft_all_gatherv_send_counts.clear()
+        self._ft_active_mask = None
+        self._ft_dp_metadata_host = None
+        self._ft_dp_metadata_device = None
+        self._ft_dp_metadata_packed = None
         self._ft_external_stream = None
         self._ft_process_group = None
         if self._ft_torch_group is not None:

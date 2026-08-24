@@ -101,9 +101,108 @@ def test_set_ft_ep_active_mask_removes_entire_failed_dp_rank(monkeypatch):
     communicator.rank_in_group = 4
     communicator.unique_name = "ep:0"
     communicator._ft_process_group = FakeProcessGroup()
+    communicator._ft_active_mask = None
 
     active_mask = communicator.set_ft_ep_active_mask((1,), dp_size=4)
 
     assert active_mask == [True, True, False, False, True, True, True, True]
     assert communicator._ft_process_group.active_mask == active_mask
     assert communicator._ft_process_group.error_cleared
+    assert communicator._ft_active_mask == active_mask
+
+
+def test_ft_active_mask_cache_refreshes_on_demand():
+    class FakeProcessGroup:
+        active_mask = [True, True]
+        reads = 0
+
+        def get_active_mask(self):
+            self.reads += 1
+            return list(self.active_mask)
+
+    communicator = object.__new__(CudaCommunicator)
+    communicator._ft_active_mask = None
+    process_group = FakeProcessGroup()
+
+    assert communicator._get_ft_active_mask(process_group) == [True, True]
+    process_group.active_mask = [True, False]
+    assert communicator._get_ft_active_mask(process_group) == [True, True]
+    assert process_group.reads == 1
+
+    assert communicator._get_ft_active_mask(process_group, refresh=True) == [
+        True,
+        False,
+    ]
+    assert process_group.reads == 2
+
+
+def test_ft_dp_metadata_buffers_are_reused_outside_inference_mode():
+    communicator = object.__new__(CudaCommunicator)
+    communicator.device = torch.device("cpu")
+    communicator.world_size = 8
+    communicator._ft_dp_metadata_host = None
+    communicator._ft_dp_metadata_device = None
+    communicator._ft_dp_metadata_packed = None
+
+    with torch.inference_mode():
+        first = communicator._get_ft_dp_metadata_buffers()
+    second = communicator._get_ft_dp_metadata_buffers()
+
+    assert all(
+        first_tensor is second_tensor
+        for first_tensor, second_tensor in zip(first, second)
+    )
+    assert not first[0].is_inference()
+    assert not first[1].is_inference()
+    assert not first[2].is_inference()
+    first[0].fill_(1)
+
+
+def test_ft_all_gatherv_transaction_skips_output_initialization(monkeypatch):
+    class FakeWork:
+        @staticmethod
+        def wait():
+            return True
+
+    class FakeProcessGroup:
+        @staticmethod
+        def all_gatherv(send, output, send_counts, max_size):
+            return FakeWork(), send_counts
+
+    communicator = object.__new__(CudaCommunicator)
+    communicator.world_size = 2
+    communicator.rank_in_group = 0
+    communicator._ft_all_gatherv_send_counts = {}
+    communicator._get_ft_native_staging_view = lambda *args: torch.empty((1, 4))
+    communicator._get_ft_process_group = lambda: FakeProcessGroup()
+    communicator._copy_to_ft_staging = lambda *args: None
+    communicator._check_ft_nccl_status = lambda *args: None
+
+    allocations = []
+    real_empty = torch.empty
+    real_zeros = torch.zeros
+
+    def tracked_empty(*args, **kwargs):
+        allocations.append(("empty", args[0]))
+        return real_empty(*args, **kwargs)
+
+    def tracked_zeros(*args, **kwargs):
+        allocations.append(("zeros", args[0]))
+        return real_zeros(*args, **kwargs)
+
+    monkeypatch.setenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "1")
+    monkeypatch.setattr(torch, "empty", tracked_empty)
+    monkeypatch.setattr(torch, "zeros", tracked_zeros)
+    input_tensor = real_empty((1, 4))
+
+    communicator._ft_nccl_native_all_gatherv(
+        input_tensor, sizes=[1, 1], check_status=False
+    )
+    assert ("empty", (2, 4)) in allocations
+    assert ("zeros", (2, 4)) not in allocations
+
+    allocations.clear()
+    communicator._ft_nccl_native_all_gatherv(
+        input_tensor, sizes=[1, 1], check_status=True
+    )
+    assert ("zeros", (2, 4)) in allocations
