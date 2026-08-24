@@ -65,7 +65,7 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     worker._maybe_rejoin_ft_membership()
     worker._maybe_rejoin_ft_membership()
 
-    worker.rejoin_ft_membership.assert_called_once_with()
+    assert worker.rejoin_ft_membership.call_count == 1
     assert (ack_dir / "generation-1.rank-3.ack").exists()
 
     trigger.write_text("generation-2\n", encoding="utf-8")
@@ -108,8 +108,11 @@ def test_worker_rejoins_ep_last_as_global_rendezvous(monkeypatch):
     )
     worker = object.__new__(Worker)
 
-    assert worker.rejoin_ft_membership() == [[True, True], [True, True]]
-    assert calls == ["tp", "ep"]
+    assert worker.rejoin_ft_membership(lambda: calls.append("rendezvous")) == [
+        [True, True],
+        [True, True],
+    ]
+    assert calls == ["tp", "rendezvous", "ep"]
 
 
 def test_worker_rejoin_ready_waits_for_every_rank(tmp_path):
@@ -134,14 +137,14 @@ def test_worker_rejoin_arrival_waits_for_every_rank(tmp_path, monkeypatch):
     worker._ft_rejoin_arrival_timeout = 1.0
     worker._ft_rejoin_poll_interval = 0.0
 
-    peer_marker = tmp_path / "generation.attempt-1.rank-1.arrived"
+    peer_marker = tmp_path / "generation.attempt-1.start.rank-1.arrived"
     monkeypatch.setattr(
         "vllm.v1.worker.gpu_worker.time.sleep",
         lambda _: peer_marker.write_text("rank=1\n", encoding="utf-8"),
     )
 
     worker._wait_for_ft_rejoin_arrivals("generation", 1)
-    assert (tmp_path / "generation.attempt-1.rank-0.arrived").exists()
+    assert (tmp_path / "generation.attempt-1.start.rank-0.arrived").exists()
 
 
 def test_unpack_ft_rank_values_restores_inactive_slot():

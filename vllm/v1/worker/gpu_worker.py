@@ -923,7 +923,9 @@ class Worker(WorkerBase):
             )
         set_active_mask(failed_dp_ranks, dp_size)
 
-    def rejoin_ft_membership(self) -> list[list[bool]]:
+    def rejoin_ft_membership(
+        self, before_ep: Callable[[], None] | None = None
+    ) -> list[list[bool]]:
         """Collectively restore responsive EP and TP ranks between model steps."""
         if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
             return []
@@ -932,7 +934,9 @@ class Worker(WorkerBase):
         # Restore independent TP groups before entering the full-world EP
         # rejoin. The readiness protocol below keeps every rank participating
         # until all ranks have observed the restored EP membership.
-        for group in (get_tp_group(), get_ep_group()):
+        for group_name, group in (("TP", get_tp_group()), ("EP", get_ep_group())):
+            if group_name == "EP" and before_ep is not None:
+                before_ep()
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
@@ -942,8 +946,17 @@ class Worker(WorkerBase):
                 raise RuntimeError(
                     "FT rank rejoin requires communicator rejoin support."
                 )
+            logger.warning(
+                "Entering FT NCCL %s rejoin for rank %d.", group_name, self.rank
+            )
             if membership := rejoin():
                 memberships.append(membership)
+            logger.warning(
+                "Finished FT NCCL %s rejoin for rank %d: %s.",
+                group_name,
+                self.rank,
+                membership,
+            )
         return memberships
 
     def _maybe_rejoin_ft_membership(self) -> None:
@@ -965,8 +978,12 @@ class Worker(WorkerBase):
 
         logger.warning("Starting FT NCCL rejoin generation %s.", generation)
         for attempt in range(1, self._ft_rejoin_max_attempts + 1):
-            self._wait_for_ft_rejoin_arrivals(generation, attempt)
-            memberships = self.rejoin_ft_membership()
+            self._wait_for_ft_rejoin_arrivals(generation, attempt, "start")
+            memberships = self.rejoin_ft_membership(
+                before_ep=lambda attempt=attempt: self._wait_for_ft_rejoin_arrivals(
+                    generation, attempt, "ep"
+                )
+            )
             full_membership = bool(memberships) and all(
                 all(mask) for mask in memberships
             )
@@ -1005,7 +1022,9 @@ class Worker(WorkerBase):
                 ack_file.write(f"rank={self.rank}\n")
         logger.warning("Completed FT NCCL rejoin generation %s.", generation)
 
-    def _wait_for_ft_rejoin_arrivals(self, generation: str, attempt: int) -> None:
+    def _wait_for_ft_rejoin_arrivals(
+        self, generation: str, attempt: int, phase: str = "start"
+    ) -> None:
         """Align all local workers before entering an FT rejoin attempt."""
         ack_dir = self._ft_rejoin_ack_dir
         expected_ranks = self._ft_rejoin_expected_ranks
@@ -1013,7 +1032,7 @@ class Worker(WorkerBase):
             return
 
         os.makedirs(ack_dir, exist_ok=True)
-        marker_prefix = f"{generation}.attempt-{attempt}.rank-"
+        marker_prefix = f"{generation}.attempt-{attempt}.{phase}.rank-"
         marker_path = os.path.join(
             ack_dir, f"{marker_prefix}{self.rank}.arrived"
         )
@@ -1027,10 +1046,19 @@ class Worker(WorkerBase):
                 for name in os.listdir(ack_dir)
             )
             if arrivals >= expected_ranks:
+                logger.warning(
+                    "FT NCCL rejoin generation %s attempt %d phase %s "
+                    "rendezvoused %d ranks.",
+                    generation,
+                    attempt,
+                    phase,
+                    arrivals,
+                )
                 return
             time.sleep(self._ft_rejoin_poll_interval)
         raise RuntimeError(
             f"FT NCCL rejoin generation {generation} attempt {attempt} "
+            f"phase {phase} "
             f"did not rendezvous all {expected_ranks} ranks."
         )
 

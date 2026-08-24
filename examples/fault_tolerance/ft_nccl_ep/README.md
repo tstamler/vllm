@@ -45,6 +45,9 @@ CUDA graph execution only after every expected rank has published that marker.
 Before each attempt, workers use generation-specific arrival markers to enter
 `ft_rejoin()` together. This prevents a resumed rank and the reduced group from
 executing different rejoin rounds when the interrupted model step drains late.
+Workers rendezvous again after their independent TP rejoin and before the
+full-world EP rejoin, since the recovering TP pair can finish later than the
+healthy TP pairs.
 The original captured graphs continue to be used because communicator state,
 buffer addresses, graph shapes, and the device-mask address remain stable.
 
