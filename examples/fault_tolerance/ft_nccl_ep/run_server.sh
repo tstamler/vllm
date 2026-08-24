@@ -17,8 +17,8 @@ export FT_NCCL_MAX_COUNT=${FT_NCCL_MAX_COUNT:-4194304}
 # Keep the FT failure-detection controls visible at the experiment boundary.
 # FT NCCL interprets the timeout in microseconds and requires at least two
 # collective barrier rounds to propagate membership among surviving ranks.
-export FT_TIMEOUT_US=${FT_TIMEOUT_US:-10000000}
-export FT_BARRIER_ROUNDS=${FT_BARRIER_ROUNDS:-3}
+export FT_TIMEOUT_US=${FT_TIMEOUT_US:-5000000}
+export FT_BARRIER_ROUNDS=${FT_BARRIER_ROUNDS:-2}
 # vLLM prepares the collective barrier's symmetric windows during startup,
 # before a worker can be removed from the communicator.
 export FT_BARRIER_MODE=${FT_BARRIER_MODE:-collective}
@@ -28,9 +28,12 @@ export VLLM_FT_REJOIN_TRIGGER_FILE=${VLLM_FT_REJOIN_TRIGGER_FILE:-/tmp/vllm-ft-r
 export VLLM_FT_REJOIN_ACK_DIR=${VLLM_FT_REJOIN_ACK_DIR:-/tmp/vllm-ft-rejoin-acks}
 export VLLM_FT_REJOIN_MAX_ATTEMPTS=${VLLM_FT_REJOIN_MAX_ATTEMPTS:-12}
 export VLLM_FT_REJOIN_EXPECTED_RANKS=${VLLM_FT_REJOIN_EXPECTED_RANKS:-$((TP_SIZE * DP_SIZE))}
+export VLLM_FT_REJOIN_ARRIVAL_TIMEOUT=${VLLM_FT_REJOIN_ARRIVAL_TIMEOUT:-60}
 rm -f "${VLLM_FT_REJOIN_TRIGGER_FILE}"
 mkdir -p "${VLLM_FT_REJOIN_ACK_DIR}"
-rm -f "${VLLM_FT_REJOIN_ACK_DIR}"/*.ack "${VLLM_FT_REJOIN_ACK_DIR}"/*.ready
+rm -f "${VLLM_FT_REJOIN_ACK_DIR}"/*.ack \
+  "${VLLM_FT_REJOIN_ACK_DIR}"/*.arrived \
+  "${VLLM_FT_REJOIN_ACK_DIR}"/*.ready
 
 engine_args=(
   "${MODEL}"

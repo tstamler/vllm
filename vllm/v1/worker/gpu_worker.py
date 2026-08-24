@@ -160,6 +160,7 @@ class Worker(WorkerBase):
         self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
         self._ft_rejoin_max_attempts = envs.VLLM_FT_REJOIN_MAX_ATTEMPTS
         self._ft_rejoin_expected_ranks = envs.VLLM_FT_REJOIN_EXPECTED_RANKS
+        self._ft_rejoin_arrival_timeout = envs.VLLM_FT_REJOIN_ARRIVAL_TIMEOUT
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
 
@@ -964,6 +965,7 @@ class Worker(WorkerBase):
 
         logger.warning("Starting FT NCCL rejoin generation %s.", generation)
         for attempt in range(1, self._ft_rejoin_max_attempts + 1):
+            self._wait_for_ft_rejoin_arrivals(generation, attempt)
             memberships = self.rejoin_ft_membership()
             full_membership = bool(memberships) and all(
                 all(mask) for mask in memberships
@@ -1002,6 +1004,35 @@ class Worker(WorkerBase):
             with open(ack_path, "w", encoding="utf-8") as ack_file:
                 ack_file.write(f"rank={self.rank}\n")
         logger.warning("Completed FT NCCL rejoin generation %s.", generation)
+
+    def _wait_for_ft_rejoin_arrivals(self, generation: str, attempt: int) -> None:
+        """Align all local workers before entering an FT rejoin attempt."""
+        ack_dir = self._ft_rejoin_ack_dir
+        expected_ranks = self._ft_rejoin_expected_ranks
+        if not ack_dir or expected_ranks <= 1:
+            return
+
+        os.makedirs(ack_dir, exist_ok=True)
+        marker_prefix = f"{generation}.attempt-{attempt}.rank-"
+        marker_path = os.path.join(
+            ack_dir, f"{marker_prefix}{self.rank}.arrived"
+        )
+        with open(marker_path, "w", encoding="utf-8") as marker_file:
+            marker_file.write(f"rank={self.rank}\n")
+
+        deadline = time.monotonic() + self._ft_rejoin_arrival_timeout
+        while time.monotonic() < deadline:
+            arrivals = sum(
+                name.startswith(marker_prefix) and name.endswith(".arrived")
+                for name in os.listdir(ack_dir)
+            )
+            if arrivals >= expected_ranks:
+                return
+            time.sleep(self._ft_rejoin_poll_interval)
+        raise RuntimeError(
+            f"FT NCCL rejoin generation {generation} attempt {attempt} "
+            f"did not rendezvous all {expected_ranks} ranks."
+        )
 
     def _publish_ft_rejoin_ready(
         self, generation: str, memberships: list[list[bool]]

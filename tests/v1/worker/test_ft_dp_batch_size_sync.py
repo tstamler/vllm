@@ -56,6 +56,7 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     worker._ft_rejoin_poll_interval = 0.0
     worker._ft_rejoin_max_attempts = 2
     worker._ft_rejoin_expected_ranks = 1
+    worker._ft_rejoin_arrival_timeout = 1.0
     worker._ft_rejoin_last_poll = 0.0
     worker._ft_rejoin_generation = None
     worker.rejoin_ft_membership = Mock(return_value=[[True, True]])
@@ -123,6 +124,24 @@ def test_worker_rejoin_ready_waits_for_every_rank(tmp_path):
 
     (tmp_path / "generation.rank-1.ready").write_text("rank=1\n", encoding="utf-8")
     assert worker._publish_ft_rejoin_ready("generation", memberships)
+
+
+def test_worker_rejoin_arrival_waits_for_every_rank(tmp_path, monkeypatch):
+    worker = object.__new__(Worker)
+    worker.rank = 0
+    worker._ft_rejoin_ack_dir = str(tmp_path)
+    worker._ft_rejoin_expected_ranks = 2
+    worker._ft_rejoin_arrival_timeout = 1.0
+    worker._ft_rejoin_poll_interval = 0.0
+
+    peer_marker = tmp_path / "generation.attempt-1.rank-1.arrived"
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu_worker.time.sleep",
+        lambda _: peer_marker.write_text("rank=1\n", encoding="utf-8"),
+    )
+
+    worker._wait_for_ft_rejoin_arrivals("generation", 1)
+    assert (tmp_path / "generation.attempt-1.rank-0.arrived").exists()
 
 
 def test_unpack_ft_rank_values_restores_inactive_slot():

@@ -24,7 +24,7 @@ In another shell, run the experiment:
 ```bash
 STALL_AT_SECONDS=120 \
 STALL_SECONDS=15 \
-REJOIN_DELAY_SECONDS=30 \
+REJOIN_DELAY_SECONDS=60 \
 DURATION_SECONDS=360 \
 CONCURRENCY=64 \
 examples/fault_tolerance/ft_nccl_ep/run_rejoin_experiment.sh
@@ -42,6 +42,9 @@ each attempt can take up to the configured FT timeout.
 After a rank observes full membership it publishes a generation-specific
 readiness marker but continues calling `ft_rejoin()`. Workers resume model and
 CUDA graph execution only after every expected rank has published that marker.
+Before each attempt, workers use generation-specific arrival markers to enter
+`ft_rejoin()` together. This prevents a resumed rank and the reduced group from
+executing different rejoin rounds when the interrupted model step drains late.
 The original captured graphs continue to be used because communicator state,
 buffer addresses, graph shapes, and the device-mask address remain stable.
 

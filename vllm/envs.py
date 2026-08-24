@@ -119,6 +119,7 @@ if TYPE_CHECKING:
     VLLM_FT_REJOIN_POLL_INTERVAL: float = 0.1
     VLLM_FT_REJOIN_MAX_ATTEMPTS: int = 12
     VLLM_FT_REJOIN_EXPECTED_RANKS: int = 0
+    VLLM_FT_REJOIN_ARRIVAL_TIMEOUT: float = 60.0
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
@@ -1112,6 +1113,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     "VLLM_FT_REJOIN_EXPECTED_RANKS": lambda: int(
         os.getenv("VLLM_FT_REJOIN_EXPECTED_RANKS", "0")
+    ),
+    "VLLM_FT_REJOIN_ARRIVAL_TIMEOUT": lambda: float(
+        os.getenv("VLLM_FT_REJOIN_ARRIVAL_TIMEOUT", "60")
     ),
     # Optional: enable external Oink custom ops (e.g., Blackwell RMSNorm).
     # Disabled by default.
