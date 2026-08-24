@@ -778,7 +778,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
             torch.cuda.current_stream(local_metadata.device).synchronize()
             status = ft_process_group.get_error()
             if status == self._ft_ok_status:
-                ft_process_group.clear_error()
+                # FT_OK is already the desired sticky state. Avoid a redundant
+                # mapped-host write on every model step.
                 tokens_across_dp, synced_cudagraph_mode = _unpack_ft_dp_metadata(
                     packed, recv_counts, dp_size
                 )
@@ -1051,7 +1052,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             torch.cuda.current_stream(inputs[0].device).synchronize()
             status = ft_process_group.get_error()
             if status == self._ft_ok_status:
-                ft_process_group.clear_error()
+                # A successful transaction leaves the sticky flag at FT_OK.
                 return outputs
 
             result_mask = ft_process_group.get_result_mask()

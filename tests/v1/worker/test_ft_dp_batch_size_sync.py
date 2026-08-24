@@ -206,3 +206,47 @@ def test_ft_all_gatherv_transaction_skips_output_initialization(monkeypatch):
         input_tensor, sizes=[1, 1], check_status=True
     )
     assert ("zeros", (2, 4)) in allocations
+
+
+def test_ft_dispatch_success_does_not_clear_ok_status(monkeypatch):
+    class FakeStream:
+        @staticmethod
+        def synchronize():
+            return None
+
+    class FakeProcessGroup:
+        def __init__(self):
+            self.clear_calls = 0
+
+        @staticmethod
+        def get_error():
+            return 0
+
+        def clear_error(self):
+            self.clear_calls += 1
+
+    process_group = FakeProcessGroup()
+    communicator = object.__new__(CudaCommunicator)
+    communicator.world_size = 2
+    communicator.rank_in_group = 0
+    communicator.unique_name = "ep:0"
+    communicator._ft_ok_status = 0
+    communicator._ft_active_mask = [True, True]
+    communicator._get_ft_process_group = lambda: process_group
+    communicator._ft_nccl_native_all_gatherv = (
+        lambda input_, dim, sizes, check_status: torch.empty((2, 4))
+    )
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(
+        torch.cuda,
+        "current_stream",
+        lambda device=None: FakeStream(),
+    )
+
+    outputs = communicator._ft_nccl_all_gatherv_transaction(
+        [torch.empty((1, 4))], dim=0, sizes=[1, 1]
+    )
+
+    assert len(outputs) == 1
+    assert process_group.clear_calls == 0
