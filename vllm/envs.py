@@ -114,6 +114,11 @@ if TYPE_CHECKING:
     VLLM_USE_FT_NCCL_COMMUNICATOR: bool = False
     VLLM_USE_FT_NCCL_EP: bool = False
     VLLM_FT_SURVIVE_WORKER_FAILURE: bool = False
+    VLLM_FT_REJOIN_TRIGGER_FILE: str | None = None
+    VLLM_FT_REJOIN_ACK_DIR: str | None = None
+    VLLM_FT_REJOIN_POLL_INTERVAL: float = 0.1
+    VLLM_FT_REJOIN_MAX_ATTEMPTS: int = 12
+    VLLM_FT_REJOIN_EXPECTED_RANKS: int = 0
     VLLM_USE_OINK_OPS: bool = False
     VLLM_ROCM_USE_AITER: bool = False
     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
@@ -1094,6 +1099,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_FT_SURVIVE_WORKER_FAILURE": lambda: (
         os.getenv("VLLM_FT_SURVIVE_WORKER_FAILURE", "False").lower()
         in ("true", "1", "yes", "on")
+    ),
+    "VLLM_FT_REJOIN_TRIGGER_FILE": lambda: os.getenv(
+        "VLLM_FT_REJOIN_TRIGGER_FILE"
+    ),
+    "VLLM_FT_REJOIN_ACK_DIR": lambda: os.getenv("VLLM_FT_REJOIN_ACK_DIR"),
+    "VLLM_FT_REJOIN_POLL_INTERVAL": lambda: float(
+        os.getenv("VLLM_FT_REJOIN_POLL_INTERVAL", "0.1")
+    ),
+    "VLLM_FT_REJOIN_MAX_ATTEMPTS": lambda: int(
+        os.getenv("VLLM_FT_REJOIN_MAX_ATTEMPTS", "12")
+    ),
+    "VLLM_FT_REJOIN_EXPECTED_RANKS": lambda: int(
+        os.getenv("VLLM_FT_REJOIN_EXPECTED_RANKS", "0")
     ),
     # Optional: enable external Oink custom ops (e.g., Blackwell RMSNorm).
     # Disabled by default.

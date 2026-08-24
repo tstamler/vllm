@@ -155,14 +155,11 @@ class Worker(WorkerBase):
         self.use_v2_model_runner = vllm_config.use_v2_model_runner
         # pending non-blocking PP send work from the previous iteration
         self._pp_send_work: list[Handle] = []
-        self._ft_rejoin_trigger = os.getenv("VLLM_FT_REJOIN_TRIGGER_FILE")
-        self._ft_rejoin_ack_dir = os.getenv("VLLM_FT_REJOIN_ACK_DIR")
-        self._ft_rejoin_poll_interval = float(
-            os.getenv("VLLM_FT_REJOIN_POLL_INTERVAL", "0.1")
-        )
-        self._ft_rejoin_max_attempts = int(
-            os.getenv("VLLM_FT_REJOIN_MAX_ATTEMPTS", "12")
-        )
+        self._ft_rejoin_trigger = envs.VLLM_FT_REJOIN_TRIGGER_FILE
+        self._ft_rejoin_ack_dir = envs.VLLM_FT_REJOIN_ACK_DIR
+        self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
+        self._ft_rejoin_max_attempts = envs.VLLM_FT_REJOIN_MAX_ATTEMPTS
+        self._ft_rejoin_expected_ranks = envs.VLLM_FT_REJOIN_EXPECTED_RANKS
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
 
@@ -888,11 +885,7 @@ class Worker(WorkerBase):
         # Every surviving worker participates in EP, so converge it first
         # while the engine-level rendezvous has all workers closely aligned.
         # TP groups are independent and can converge afterward.
-        # Rejoin each independent TP group first. EP is deliberately last: its
-        # full-world rejoin is also the final rendezvous that prevents fast TP
-        # groups from resuming model work while another TP group is still
-        # restoring membership.
-        for group in (get_tp_group(), get_ep_group()):
+        for group in (get_ep_group(), get_tp_group()):
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
@@ -935,7 +928,10 @@ class Worker(WorkerBase):
             return []
         seen: set[int] = set()
         memberships: list[list[bool]] = []
-        for group in (get_ep_group(), get_tp_group()):
+        # Restore independent TP groups before entering the full-world EP
+        # rejoin. The readiness protocol below keeps every rank participating
+        # until all ranks have observed the restored EP membership.
+        for group in (get_tp_group(), get_ep_group()):
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
@@ -969,16 +965,30 @@ class Worker(WorkerBase):
         logger.warning("Starting FT NCCL rejoin generation %s.", generation)
         for attempt in range(1, self._ft_rejoin_max_attempts + 1):
             memberships = self.rejoin_ft_membership()
-            if memberships and all(all(mask) for mask in memberships):
-                break
-            logger.warning(
-                "FT NCCL rejoin generation %s attempt %d/%d remained "
-                "incomplete: %s. Retrying before model execution.",
-                generation,
-                attempt,
-                self._ft_rejoin_max_attempts,
-                memberships,
+            full_membership = bool(memberships) and all(
+                all(mask) for mask in memberships
             )
+            if full_membership and self._publish_ft_rejoin_ready(
+                generation, memberships
+            ):
+                break
+            if full_membership:
+                logger.warning(
+                    "FT NCCL rejoin generation %s attempt %d/%d observed full "
+                    "local membership; continuing until every rank is ready.",
+                    generation,
+                    attempt,
+                    self._ft_rejoin_max_attempts,
+                )
+            else:
+                logger.warning(
+                    "FT NCCL rejoin generation %s attempt %d/%d remained "
+                    "incomplete: %s. Retrying before model execution.",
+                    generation,
+                    attempt,
+                    self._ft_rejoin_max_attempts,
+                    memberships,
+                )
         else:
             raise RuntimeError(
                 f"FT NCCL rejoin generation {generation} did not restore full "
@@ -992,6 +1002,28 @@ class Worker(WorkerBase):
             with open(ack_path, "w", encoding="utf-8") as ack_file:
                 ack_file.write(f"rank={self.rank}\n")
         logger.warning("Completed FT NCCL rejoin generation %s.", generation)
+
+    def _publish_ft_rejoin_ready(
+        self, generation: str, memberships: list[list[bool]]
+    ) -> bool:
+        """Publish local completion while continuing rejoin until all are ready."""
+        ack_dir = self._ft_rejoin_ack_dir
+        if not ack_dir:
+            return True
+        os.makedirs(ack_dir, exist_ok=True)
+        ready_path = os.path.join(ack_dir, f"{generation}.rank-{self.rank}.ready")
+        with open(ready_path, "w", encoding="utf-8") as ready_file:
+            ready_file.write(f"rank={self.rank}\n")
+
+        expected_ranks = self._ft_rejoin_expected_ranks or max(
+            len(mask) for mask in memberships
+        )
+        ready_prefix = f"{generation}.rank-"
+        ready_count = sum(
+            name.startswith(ready_prefix) and name.endswith(".ready")
+            for name in os.listdir(ack_dir)
+        )
+        return ready_count >= expected_ranks
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()

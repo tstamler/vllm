@@ -39,6 +39,9 @@ final rendezvous before workers resume model execution.
 An incomplete rejoin round is retried in-place rather than escaping through the
 active `execute_model` RPC. `VLLM_FT_REJOIN_MAX_ATTEMPTS` bounds these retries;
 each attempt can take up to the configured FT timeout.
+After a rank observes full membership it publishes a generation-specific
+readiness marker but continues calling `ft_rejoin()`. Workers resume model and
+CUDA graph execution only after every expected rank has published that marker.
 The original captured graphs continue to be used because communicator state,
 buffer addresses, graph shapes, and the device-mask address remain stable.
 
