@@ -93,3 +93,24 @@ def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
         failed_dp_rank=None,
     )
     core._install_ft_membership_after_failure.assert_called_once_with((1,))
+
+
+def test_withdrawn_dp_engine_dispatches_rejoin_to_workers(tmp_path):
+    trigger = tmp_path / "rejoin.trigger"
+    trigger.write_text("generation-1\n", encoding="utf-8")
+    core = object.__new__(DPEngineCoreProc)
+    core.dp_rank = 1
+    core._tp_degraded = True
+    core._ft_rejoin_trigger = str(trigger)
+    core._ft_rejoin_poll_interval = 0.0
+    core._ft_rejoin_last_poll = 0.0
+    core._ft_rejoin_generation = None
+    core.model_executor = SimpleNamespace(collective_rpc=Mock())
+
+    core._maybe_execute_ft_rejoin()
+    core._maybe_execute_ft_rejoin()
+
+    core.model_executor.collective_rpc.assert_called_once_with(
+        "execute_ft_rejoin_generation", args=("generation-1",)
+    )
+    assert core._ft_rejoin_generation == "generation-1"

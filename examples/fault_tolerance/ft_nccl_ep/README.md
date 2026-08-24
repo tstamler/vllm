@@ -34,6 +34,9 @@ The experiment sends `SIGSTOP` to one worker, sends `SIGCONT` after
 `STALL_SECONDS`, leaves the reduced membership installed for
 `REJOIN_DELAY_SECONDS`, and then writes a generation token to the rejoin trigger.
 Every worker calls `ft_rejoin()` once for that generation between model steps.
+Each persistent DP EngineCore polls the trigger and explicitly invokes both of
+its TP workers, including workers withdrawn from model execution. Active
+workers do not initiate rejoin from the model path.
 TP groups rejoin first and the world-wide EP rejoin runs last, acting as the
 final rendezvous before workers resume model execution.
 An incomplete rejoin round is retried in-place rather than escaping through the

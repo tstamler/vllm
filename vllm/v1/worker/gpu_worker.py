@@ -791,7 +791,6 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
-        self._maybe_rejoin_ft_membership()
         # ensure any previous non-blocking PP sends are complete
         if self._pp_send_work:
             for handle in self._pp_send_work:
@@ -976,6 +975,13 @@ class Worker(WorkerBase):
         if not generation or generation == self._ft_rejoin_generation:
             return
 
+        self.execute_ft_rejoin_generation(generation)
+
+    def execute_ft_rejoin_generation(self, generation: str) -> None:
+        """Execute an engine-coordinated rejoin generation exactly once."""
+        if not generation or generation == self._ft_rejoin_generation:
+            return
+
         logger.warning("Starting FT NCCL rejoin generation %s.", generation)
         for attempt in range(1, self._ft_rejoin_max_attempts + 1):
             self._wait_for_ft_rejoin_arrivals(generation, attempt, "start")
@@ -1141,7 +1147,6 @@ class Worker(WorkerBase):
             self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
-        self._maybe_rejoin_ft_membership()
         num_tokens = getattr(self.model_runner, "uniform_decode_query_len", 1)
         self.model_runner._dummy_run(num_tokens, uniform_decode=True)
 

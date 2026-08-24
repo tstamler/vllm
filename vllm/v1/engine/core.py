@@ -1689,6 +1689,10 @@ class DPEngineCoreProc(EngineCoreProc):
         self.ignore_start_dp_wave = False
         self._tp_degraded = False
         self._ft_installed_failures: tuple[int, ...] = ()
+        self._ft_rejoin_trigger = envs.VLLM_FT_REJOIN_TRIGGER_FILE
+        self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
+        self._ft_rejoin_last_poll = 0.0
+        self._ft_rejoin_generation: str | None = None
 
         from vllm.distributed.elastic_ep.elastic_state import ElasticEPScalingState
 
@@ -1831,6 +1835,7 @@ class DPEngineCoreProc(EngineCoreProc):
 
         # Loop until process is sent a SIGINT or SIGTERM
         while self._handle_shutdown():
+            self._maybe_execute_ft_rejoin()
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
             self._maybe_handle_own_tp_degradation()
@@ -1899,6 +1904,34 @@ class DPEngineCoreProc(EngineCoreProc):
                 self.step_counter = 0
 
         raise SystemExit
+
+    def _maybe_execute_ft_rejoin(self) -> None:
+        """Drive rejoin through every engine, including withdrawn DP ranks."""
+        trigger = self._ft_rejoin_trigger
+        if not trigger:
+            return
+        now = time.monotonic()
+        if now - self._ft_rejoin_last_poll < self._ft_rejoin_poll_interval:
+            return
+        self._ft_rejoin_last_poll = now
+        try:
+            with open(trigger, encoding="utf-8") as trigger_file:
+                generation = trigger_file.read().strip()
+        except FileNotFoundError:
+            return
+        if not generation or generation == self._ft_rejoin_generation:
+            return
+
+        logger.warning(
+            "DP rank %d dispatching FT NCCL rejoin generation %s to all TP "
+            "workers.",
+            self.dp_rank,
+            generation,
+        )
+        self.model_executor.collective_rpc(
+            "execute_ft_rejoin_generation", args=(generation,)
+        )
+        self._ft_rejoin_generation = generation
 
     def _run_with_ft_worker_death_guard(
         self, operation: str, action: Callable[[], _R]
