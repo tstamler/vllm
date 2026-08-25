@@ -1701,6 +1701,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self._ft_rejoin_max_attempts = envs.VLLM_FT_REJOIN_MAX_ATTEMPTS
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
+        self._ft_pending_rejoin_generation: str | None = None
 
         from vllm.distributed.elastic_ep.elastic_state import ElasticEPScalingState
 
@@ -1843,7 +1844,6 @@ class DPEngineCoreProc(EngineCoreProc):
 
         # Loop until process is sent a SIGINT or SIGTERM
         while self._handle_shutdown():
-            self._maybe_execute_ft_rejoin()
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue_for_ft()
             self._maybe_handle_own_tp_degradation()
@@ -1957,20 +1957,28 @@ class DPEngineCoreProc(EngineCoreProc):
             )
         )
 
-    def _maybe_execute_ft_rejoin(self) -> None:
-        """Drive rejoin through every engine, including withdrawn DP ranks."""
+    def _poll_ft_rejoin_generation(self) -> str | None:
+        """Record a trigger generation for admission at the DP step boundary."""
         trigger = self._ft_rejoin_trigger
         if not trigger:
-            return
+            return None
         now = time.monotonic()
         if now - self._ft_rejoin_last_poll < self._ft_rejoin_poll_interval:
-            return
+            return self._ft_pending_rejoin_generation
         self._ft_rejoin_last_poll = now
         try:
             with open(trigger, encoding="utf-8") as trigger_file:
                 generation = trigger_file.read().strip()
         except FileNotFoundError:
-            return
+            return self._ft_pending_rejoin_generation
+        if not generation or generation == self._ft_rejoin_generation:
+            return self._ft_pending_rejoin_generation
+        self._ft_pending_rejoin_generation = generation
+        return generation
+
+    def _maybe_execute_ft_rejoin(self, generation: str | None = None) -> None:
+        """Drive a rejoin admitted by the ordered DP-state reduction."""
+        generation = generation or self._poll_ft_rejoin_generation()
         if not generation or generation == self._ft_rejoin_generation:
             return
 
@@ -2023,6 +2031,7 @@ class DPEngineCoreProc(EngineCoreProc):
         )
         self.barrier()
         self._ft_rejoin_generation = generation
+        self._ft_pending_rejoin_generation = None
         self._ft_observed_active_dp_ranks = None
         self._ft_installed_failures = ()
         if self._ft_stall_withdrawn and not self._tp_degraded:
@@ -2121,17 +2130,27 @@ class DPEngineCoreProc(EngineCoreProc):
             return True
 
         if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            pending_rejoin = self._poll_ft_rejoin_generation()
             local_failures = set()
             if self._tp_degraded:
                 local_failures.add(self.dp_rank)
-            has_unfinished, pause_consensus, failures = ParallelConfig.sync_ft_dp_state(
+            (
+                has_unfinished,
+                pause_consensus,
+                rejoin_consensus,
+                failures,
+            ) = ParallelConfig.sync_ft_dp_state(
                 self.dp_group,
                 has_unfinished=local_unfinished,
                 pending_pause=self.pending_pause,
+                rejoin_requested=pending_rejoin is not None,
                 active_dp_ranks=self._ft_observed_active_dp_ranks,
                 failed_dp_ranks=tuple(sorted(local_failures)),
             )
             self._install_ft_membership_after_failure(failures)
+            if rejoin_consensus:
+                assert pending_rejoin is not None
+                self._maybe_execute_ft_rejoin(pending_rejoin)
         else:
             has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
                 self.dp_group,
