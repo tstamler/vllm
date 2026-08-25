@@ -449,12 +449,16 @@ class EngineCore:
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
+        self._observe_model_runner_output(model_output)
         self._process_aborts_queue()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
 
         return engine_core_outputs, scheduler_output.total_num_scheduled_tokens > 0
+
+    def _observe_model_runner_output(self, model_output: ModelRunnerOutput) -> None:
+        """Hook for DP implementations that consume worker execution metadata."""
 
     def post_step(self, model_executed: bool) -> None:
         # When using async scheduling we can't get draft token ids in advance,
@@ -553,6 +557,7 @@ class EngineCore:
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
+        self._observe_model_runner_output(model_output)
         self._process_aborts_queue()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
@@ -1688,6 +1693,8 @@ class DPEngineCoreProc(EngineCoreProc):
         self.pending_pause = False
         self.ignore_start_dp_wave = False
         self._tp_degraded = False
+        self._ft_stall_withdrawn = False
+        self._ft_observed_failures: tuple[int, ...] = ()
         self._ft_installed_failures: tuple[int, ...] = ()
         self._ft_rejoin_trigger = envs.VLLM_FT_REJOIN_TRIGGER_FILE
         self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
@@ -1840,6 +1847,7 @@ class DPEngineCoreProc(EngineCoreProc):
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
             self._maybe_handle_own_tp_degradation()
+            self._fail_ft_stall_requests()
             # Publish request counts before and after GPU step to ensure freshness.
             self._maybe_publish_request_counts()
 
@@ -1851,7 +1859,7 @@ class DPEngineCoreProc(EngineCoreProc):
                     self.process_input_queue_block = True
                     self.eep_scaling_state = None
 
-            if self._tp_degraded:
+            if self._is_ft_withdrawn():
                 executed = False
             else:
                 completed, result = self._run_with_ft_worker_death_guard(
@@ -1862,12 +1870,10 @@ class DPEngineCoreProc(EngineCoreProc):
 
             local_unfinished_reqs = self.scheduler.has_unfinished_requests()
             if not executed:
-                if self._tp_degraded:
-                    # This DP engine's EP ranks were removed together when one
-                    # of its TP workers died. Its remaining worker must stay
-                    # idle: re-entering model dummy work would use a stale EP
-                    # mask and start an uncoordinated convergence. The EngineCore
-                    # process still participates in CPU-side DP coordination.
+                if self._is_ft_withdrawn():
+                    # This DP engine's EP ranks were removed together. Keep its
+                    # workers idle while EngineCore remains available for CPU
+                    # coordination and an explicit rejoin control operation.
                     pass
                 elif not local_unfinished_reqs and not self.engines_running:
                     # All engines are idle.
@@ -1905,6 +1911,34 @@ class DPEngineCoreProc(EngineCoreProc):
                 self.step_counter = 0
 
         raise SystemExit
+
+    def _is_ft_withdrawn(self) -> bool:
+        return self._tp_degraded or self._ft_stall_withdrawn
+
+    def _fail_ft_stall_requests(self) -> None:
+        """Reject requests that race with transient routing withdrawal."""
+        if not self._ft_stall_withdrawn:
+            return
+        errored = self.scheduler.finish_requests(None, RequestStatus.FINISHED_ERROR)
+        self._send_error_outputs(errored)
+
+    def _observe_model_runner_output(self, model_output: ModelRunnerOutput) -> None:
+        active_mask = model_output.ft_ep_active_mask
+        if not active_mask:
+            return
+        if len(active_mask) % self.dp_size:
+            raise RuntimeError(
+                f"EP active-mask size {len(active_mask)} is not divisible by "
+                f"DP size {self.dp_size}."
+            )
+        replicas_per_dp = len(active_mask) // self.dp_size
+        self._ft_observed_failures = tuple(
+            dp_rank
+            for dp_rank in range(self.dp_size)
+            if not all(
+                active_mask[dp_rank * replicas_per_dp : (dp_rank + 1) * replicas_per_dp]
+            )
+        )
 
     def _maybe_execute_ft_rejoin(self) -> None:
         """Drive rejoin through every engine, including withdrawn DP ranks."""
@@ -1972,6 +2006,18 @@ class DPEngineCoreProc(EngineCoreProc):
         )
         self.barrier()
         self._ft_rejoin_generation = generation
+        self._ft_observed_failures = ()
+        self._ft_installed_failures = ()
+        if self._ft_stall_withdrawn and not self._tp_degraded:
+            self._ft_stall_withdrawn = False
+            logger.warning(
+                "DP rank %d completed FT NCCL rejoin and is returning to "
+                "request routing.",
+                self.dp_rank,
+            )
+            self.output_queue.put_nowait(
+                (-1, EngineCoreOutputs(dp_engine_available=(self.dp_rank, True)))
+            )
 
     def _run_with_ft_worker_death_guard(
         self, operation: str, action: Callable[[], _R]
@@ -2018,6 +2064,19 @@ class DPEngineCoreProc(EngineCoreProc):
 
     def _install_ft_membership_after_failure(self, failures: tuple[int, ...]) -> None:
         """Install an EP mask agreed by the ordered DP-state reduction."""
+        should_withdraw = self.dp_rank in failures and not self._tp_degraded
+        if should_withdraw and not self._ft_stall_withdrawn:
+            self._ft_stall_withdrawn = True
+            logger.warning(
+                "DP rank %d has an inactive EP rank and is withdrawing from "
+                "serving until FT NCCL rejoin completes.",
+                self.dp_rank,
+            )
+            self.output_queue.put_nowait(
+                (-1, EngineCoreOutputs(dp_engine_available=(self.dp_rank, False)))
+            )
+            self._fail_ft_stall_requests()
+
         if not failures or failures == self._ft_installed_failures:
             return
 
@@ -2026,10 +2085,10 @@ class DPEngineCoreProc(EngineCoreProc):
             "failure in DP rank(s) %s.",
             list(failures),
         )
-        # A degraded DP engine is permanently withdrawn and issues no more
-        # model work. Its surviving worker may still finish the interrupted
-        # RPC, so do not enqueue another RPC or consume that stale response.
-        if not self._tp_degraded:
+        # A withdrawn DP engine issues no more model work. A stalled or
+        # surviving worker may still finish the interrupted RPC, so do not
+        # enqueue another RPC or consume that stale response.
+        if not self._is_ft_withdrawn():
             self.model_executor.collective_rpc(
                 "set_ft_ep_active_mask", args=(failures, self.dp_size)
             )
@@ -2045,12 +2104,14 @@ class DPEngineCoreProc(EngineCoreProc):
             return True
 
         if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-            failed_dp_rank = self.dp_rank if self._tp_degraded else None
+            local_failures = set(self._ft_observed_failures)
+            if self._tp_degraded:
+                local_failures.add(self.dp_rank)
             has_unfinished, pause_consensus, failures = ParallelConfig.sync_ft_dp_state(
                 self.dp_group,
                 has_unfinished=local_unfinished,
                 pending_pause=self.pending_pause,
-                failed_dp_rank=failed_dp_rank,
+                failed_dp_ranks=tuple(sorted(local_failures)),
             )
             self._install_ft_membership_after_failure(failures)
         else:

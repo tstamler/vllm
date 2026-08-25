@@ -701,14 +701,14 @@ class ParallelConfig:
         dp_group: ProcessGroup,
         has_unfinished: bool,
         pending_pause: bool,
-        failed_dp_rank: int | None,
+        failed_dp_ranks: tuple[int, ...],
     ) -> tuple[bool, bool, tuple[int, ...]]:
         """Synchronize scheduling state and FT membership in one reduction."""
         dp_size = dp_group.size()
         tensor = torch.zeros(2 + dp_size, dtype=torch.int32, device="cpu")
         tensor[0] = int(has_unfinished)
         tensor[1] = int(pending_pause)
-        if failed_dp_rank is not None:
+        for failed_dp_rank in failed_dp_ranks:
             tensor[2 + failed_dp_rank] = 1
         torch.distributed.all_reduce(tensor, op=ReduceOp.SUM, group=dp_group)
 

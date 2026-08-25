@@ -240,6 +240,10 @@ class EngineCoreOutputs(
     # longer receive serving requests, but remains alive for EP participation.
     tp_degraded: int | None = None
 
+    # Experimental FT path: update one DP engine's routing availability. Unlike
+    # tp_degraded, an unavailable engine can become available after ft_rejoin.
+    dp_engine_available: tuple[int, bool] | None = None
+
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.monotonic()

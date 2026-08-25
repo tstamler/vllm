@@ -268,6 +268,11 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
+    # Experimental FT path: EP membership observed by the output worker after
+    # this model step. This lets the EngineCore withdraw an entire DP replica
+    # when any of its EP ranks becomes unresponsive.
+    ft_ep_active_mask: list[bool] | None = None
+
     # Per-step routed experts data captured by the worker.
     # ``routing_data`` shape: (num_scheduled_tokens, num_layers,
     #                         num_experts_per_tok); expert IDs as uint8/uint16.
@@ -282,6 +287,8 @@ class ModelRunnerOutput:
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):
+    ft_ep_active_mask: list[bool] | None = None
+
     @abstractmethod
     def get_output(self) -> ModelRunnerOutput:
         """Get the ModelRunnerOutput for this async output.

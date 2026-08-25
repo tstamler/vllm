@@ -687,6 +687,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._ft_active_mask = list(ft_process_group.get_active_mask())
         return self._ft_active_mask
 
+    def get_ft_active_mask(self) -> list[bool] | None:
+        """Return the cached FT membership without synchronizing CUDA."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return None
+        return list(self._get_ft_active_mask(self._get_ft_process_group()))
+
     def _get_ft_dp_metadata_buffers(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

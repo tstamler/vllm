@@ -999,7 +999,9 @@ class WorkerProc:
         converted to a FAILURE response.
         """
         if isinstance(output, AsyncModelRunnerOutput):
-            output = output.get_output()
+            async_output = output
+            output = async_output.get_output()
+            output.ft_ep_active_mask = async_output.ft_ep_active_mask
 
         if isinstance(output, Exception):
             result = (WorkerProc.ResponseStatus.FAILURE, str(output))

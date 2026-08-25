@@ -393,6 +393,37 @@ class DPCoordinatorProc:
                                     )
                                 )
                             )
+                    if outputs.dp_engine_available is not None:
+                        engine_idx, available = outputs.dp_engine_available
+                        changed = False
+                        if available:
+                            if engine_idx in degraded_engines:
+                                degraded_engines.remove(engine_idx)
+                                changed = True
+                                logger.warning(
+                                    "DP engine %d completed FT rejoin; returning "
+                                    "it to request routing.",
+                                    engine_idx,
+                                )
+                        elif engine_idx not in degraded_engines:
+                            degraded_engines.add(engine_idx)
+                            changed = True
+                            logger.warning(
+                                "DP engine %d reported inactive FT membership; "
+                                "withdrawing it from request routing.",
+                                engine_idx,
+                            )
+                        if changed:
+                            publish_front.send(
+                                msgspec.msgpack.encode(
+                                    (
+                                        None,
+                                        current_wave,
+                                        engines_running,
+                                        sorted(degraded_engines),
+                                    )
+                                )
+                            )
                     scheduler_stats = outputs.scheduler_stats
                     if scheduler_stats:
                         # 1. Updated request load stats - update our local

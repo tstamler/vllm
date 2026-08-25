@@ -785,7 +785,25 @@ class Worker(WorkerBase):
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
-        return self.model_runner.sample_tokens(grammar_output)
+        output = self.model_runner.sample_tokens(grammar_output)
+        return self._attach_ft_ep_active_mask(output)
+
+    def _attach_ft_ep_active_mask(
+        self, output: ModelRunnerOutput | AsyncModelRunnerOutput
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return output
+        communicator = get_ep_group().device_communicator
+        get_active_mask = (
+            getattr(communicator, "get_ft_active_mask", None)
+            if communicator is not None
+            else None
+        )
+        if get_active_mask is not None:
+            active_mask = get_active_mask()
+            if active_mask and not all(active_mask):
+                output.ft_ep_active_mask = active_mask
+        return output
 
     @torch.inference_mode()
     def execute_model(
@@ -860,7 +878,9 @@ class Worker(WorkerBase):
             if isinstance(
                 output, ModelRunnerOutput | AsyncModelRunnerOutput | NoneType
             ):
-                return output
+                if output is not None:
+                    return self._attach_ft_ep_active_mask(output)
+                return None
 
         assert isinstance(output, IntermediateTensors)
         parallel_config = self.vllm_config.parallel_config

@@ -1313,16 +1313,8 @@ class DPAsyncMPClient(AsyncMPClient):
                     self.current_wave = wave
                     self.engines_running = running
                     degraded = decoded[3] if len(decoded) > 3 else ()
-                    if degraded and isinstance(self, DPLBAsyncMPClient):
-                        for engine_index in degraded:
-                            if engine_index not in self.dead_engine_indices:
-                                self.dead_engine_indices.add(engine_index)
-                                logger.warning(
-                                    "DP engine %d is degraded; routing future "
-                                    "requests to surviving engines.",
-                                    engine_index,
-                                )
-                                self._abort_in_flight_for_dead_engine(engine_index)
+                    if isinstance(self, DPLBAsyncMPClient):
+                        self._update_degraded_engines(set(degraded))
                     if counts is not None:
                         # Running and waiting counts are global from the
                         # Coordinator including all EngineCores. Slice to get
@@ -1393,6 +1385,24 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
         self.eng_start_index = (
             len(self.core_engines) * self.client_index
         ) // client_count
+
+    def _update_degraded_engines(self, degraded: set[int]) -> None:
+        newly_degraded = degraded - self.dead_engine_indices
+        restored = self.dead_engine_indices - degraded
+        for engine_index in sorted(newly_degraded):
+            self.dead_engine_indices.add(engine_index)
+            logger.warning(
+                "DP engine %d is degraded; routing future requests to "
+                "surviving engines.",
+                engine_index,
+            )
+            self._abort_in_flight_for_dead_engine(engine_index)
+        for engine_index in sorted(restored):
+            self.dead_engine_indices.remove(engine_index)
+            logger.warning(
+                "DP engine %d completed FT rejoin; returning it to request routing.",
+                engine_index,
+            )
 
     def _abort_in_flight_for_dead_engine(self, dead_idx: int) -> None:
         if dead_idx >= len(self.core_engines):
