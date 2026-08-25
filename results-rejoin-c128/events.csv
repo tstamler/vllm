@@ -1,0 +1,5 @@
+timestamp_unix,event,detail
+1787617966.621884137,worker_stalled,pid=1453527 pattern=Worker_DP1_TP1
+1787617986.624648103,worker_resumed,pid=1453527 pattern=Worker_DP1_TP1
+1787618076.632792848,rejoin_requested,generation=1787618076627576045
+1787618136.140608347,rejoin_timeout,generation=1787618076627576045 expected=8
