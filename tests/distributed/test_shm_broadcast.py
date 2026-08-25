@@ -392,3 +392,28 @@ def test_warning_logs(caplog_vllm):
         # Clean up when done
         writer.shutdown()
         reader.shutdown()
+
+
+def test_writer_can_exclude_dead_local_reader():
+    writer = MessageQueue(
+        n_reader=2,
+        n_local_reader=2,
+        max_chunk_bytes=1024,
+        max_chunks=1,
+    )
+    reader0 = MessageQueue.create_from_handle(writer.export_handle(), rank=0)
+    reader1 = MessageQueue.create_from_handle(writer.export_handle(), rank=1)
+    try:
+        writer.wait_until_ready()
+        reader0.wait_until_ready()
+        reader1.wait_until_ready()
+
+        writer.enqueue("first")
+        assert reader0.dequeue() == "first"
+        writer.mark_reader_dead(1)
+        writer.enqueue("second", timeout=1)
+        assert reader0.dequeue() == "second"
+    finally:
+        reader0.shutdown()
+        reader1.shutdown()
+        writer.shutdown()

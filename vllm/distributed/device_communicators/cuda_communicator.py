@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
+
 import torch
 from torch.distributed import ProcessGroup
 
@@ -25,6 +27,56 @@ _FT_NCCL_DTYPES = frozenset({torch.float32, torch.float16, torch.bfloat16})
 _FT_NCCL_ALL_GATHERV_DTYPES = _FT_NCCL_DTYPES | frozenset(
     {torch.int64, torch.int32, torch.int16, torch.int8, torch.uint8}
 )
+
+
+def _unpack_ft_rank_values(
+    packed: torch.Tensor, recv_counts: torch.Tensor
+) -> torch.Tensor:
+    """Restore one packed value per FT rank, leaving inactive ranks at zero."""
+    counts_cpu = recv_counts.cpu()
+    if torch.any((counts_cpu < 0) | (counts_cpu > 1)):
+        raise RuntimeError(
+            f"Expected zero or one FT metadata value per rank, got {counts_cpu}."
+        )
+    num_active = int(counts_cpu.sum().item())
+    rank_values = torch.zeros_like(counts_cpu)
+    rank_values[counts_cpu.bool()] = packed[:num_active].cpu()
+    return rank_values
+
+
+def _unpack_ft_dp_metadata(
+    packed: torch.Tensor, recv_counts: torch.Tensor, dp_size: int
+) -> tuple[torch.Tensor, int]:
+    """Restore FT DP token counts and synchronize the CUDA graph mode."""
+    counts_cpu = recv_counts.cpu()
+    if torch.any((counts_cpu != 0) & (counts_cpu != 2)):
+        raise RuntimeError(
+            f"Expected zero or two FT metadata values per rank, got {counts_cpu}."
+        )
+    world_size = counts_cpu.numel()
+    if world_size % dp_size != 0:
+        raise RuntimeError(
+            f"EP world size {world_size} is not divisible by DP size {dp_size}."
+        )
+
+    responding_ranks = counts_cpu == 2
+    num_responders = int(responding_ranks.sum().item())
+    if num_responders == 0:
+        raise RuntimeError("FT DP metadata exchange received no responses.")
+    rank_metadata = torch.zeros((world_size, 2), dtype=torch.int32)
+    rank_metadata[responding_ranks] = (
+        packed[: num_responders * 2].view(num_responders, 2).cpu()
+    )
+
+    replicas_per_dp = world_size // dp_size
+    dp_responders = responding_ranks.view(dp_size, replicas_per_dp).any(dim=1)
+    tokens_across_dp = rank_metadata[:, 0].view(dp_size, replicas_per_dp).amax(dim=1)
+    synced_cudagraph_mode = int(rank_metadata[responding_ranks, 1].min().item())
+
+    if synced_cudagraph_mode != 0:
+        max_num_tokens = int(tokens_across_dp.max().item())
+        tokens_across_dp[dp_responders] = max_num_tokens
+    return tokens_across_dp, synced_cudagraph_mode
 
 
 class CudaCommunicator(DeviceCommunicatorBase):
@@ -98,6 +150,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_all_gatherv_send_counts: dict[
             tuple[str, int | None, int], torch.Tensor
         ] = {}
+        self._ft_active_mask: list[bool] | None = None
+        self._ft_result_mask: list[bool] | None = None
+        self._ft_dp_metadata_host: torch.Tensor | None = None
+        self._ft_dp_metadata_device: torch.Tensor | None = None
+        self._ft_dp_metadata_packed: torch.Tensor | None = None
 
         if use_torch_symm_mem and current_platform.is_cuda():
             self.symm_mem_comm = SymmMemCommunicator(
@@ -349,7 +406,38 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         self._ft_process_group = ft_process_group
         self._ft_ok_status = FT_OK
+        self._prepare_ft_convergence(ft_process_group)
         return ft_process_group
+
+    def _prepare_ft_convergence(self, ft_process_group) -> None:
+        """Collectively allocate convergence buffers before a peer can fail."""
+        if (
+            not envs.VLLM_FT_SURVIVE_WORKER_FAILURE
+            or self.world_size <= 1
+            or self._ft_group_kind() not in ("tp", "ep")
+            or os.environ.get("FT_BARRIER_MODE", "collective") != "collective"
+        ):
+            return
+
+        prepare = getattr(ft_process_group, "prepare_convergence", None)
+        if callable(prepare):
+            with torch.inference_mode(False):
+                prepare()
+            return
+
+        # Compatibility with FTProcessGroup versions that allocate these
+        # lazily in _ft_barrier_collective(). empty() and window registration
+        # are collective, so this must remain in communicator initialization.
+        with torch.inference_mode(False):
+            n = self.world_size
+            bar_send = getattr(ft_process_group, "_bar_send", None)
+            if bar_send is None or bar_send.numel() != n * n:
+                ft_process_group._bar_send = ft_process_group.empty(
+                    n * n, dtype=torch.float32
+                )
+                ft_process_group._bar_out = torch.zeros(
+                    n * n, dtype=torch.float32, device=self.device
+                )
 
     def _ft_fallback_reason(self, input_: torch.Tensor, op: str) -> str | None:
         return self._ft_staging_fallback_reason(
@@ -513,12 +601,243 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def _check_ft_nccl_status(self, ft_process_group) -> None:
         if torch.cuda.is_current_stream_capturing():
             return
+        if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                # FT Work.wait() only orders CUDA streams. The kernel may still
+                # be running, so an observed FT_OK is not safe to clear yet.
+                return
+            if not hasattr(ft_process_group, "get_result_mask"):
+                raise RuntimeError(
+                    "FT failure survival requires FTProcessGroup.get_result_mask()."
+                )
+            result_mask = self._record_ft_result_mask(ft_process_group)
+            self._get_ft_active_mask(ft_process_group, refresh=True)
+            logger.warning(
+                "FT NCCL collective for group '%s' completed after a peer "
+                "failure; observed responders: %s.",
+                self.unique_name or "<unnamed>",
+                result_mask,
+            )
+            return
         if hasattr(ft_process_group, "check_and_clear_error"):
             status = ft_process_group.check_and_clear_error()
         else:
             status = ft_process_group.get_error()
         if status != self._ft_ok_status:
             raise RuntimeError(f"FT NCCL communicator collective failed: {status}.")
+
+    def rejoin_ft_membership(self) -> list[bool] | None:
+        """Re-admit responsive ranks without rebuilding captured CUDA graphs."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return None
+        ft_process_group = self._get_ft_process_group()
+        if not hasattr(ft_process_group, "ft_rejoin"):
+            raise RuntimeError(
+                "FT rank rejoin requires FTProcessGroup.ft_rejoin()."
+            )
+
+        # Rejoin is an infrequent control-plane transition between model steps.
+        # Drain the application stream before changing the device-resident mask;
+        # captured collectives retain the same handle and mask address.
+        torch.cuda.current_stream(self.device).synchronize()
+        with torch.inference_mode(False):
+            old_mask = self._get_ft_active_mask(ft_process_group)
+            new_mask = list(ft_process_group.ft_rejoin())
+            self._ft_active_mask = new_mask
+            self._ft_result_mask = None
+            ft_process_group.clear_error()
+        if new_mask != old_mask:
+            logger.warning(
+                "FT NCCL membership for group '%s' rejoined from %s to %s.",
+                self.unique_name or "<unnamed>",
+                old_mask,
+                new_mask,
+            )
+        return new_mask
+
+    def _get_ft_active_mask(
+        self, ft_process_group, refresh: bool = False
+    ) -> list[bool]:
+        if refresh or self._ft_active_mask is None:
+            self._ft_active_mask = list(ft_process_group.get_active_mask())
+        return self._ft_active_mask
+
+    def _record_ft_result_mask(self, ft_process_group) -> list[bool]:
+        result_mask = list(ft_process_group.get_result_mask())
+        self._ft_result_mask = result_mask
+        return result_mask
+
+    def get_ft_result_mask(self) -> list[bool] | None:
+        """Return responders from the last failed FT collective, if any."""
+        return (
+            list(self._ft_result_mask)
+            if self._ft_result_mask is not None
+            else None
+        )
+
+    def _get_ft_dp_metadata_buffers(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._ft_dp_metadata_device is None:
+            with torch.inference_mode(False), torch.device("cpu"):
+                self._ft_dp_metadata_host = torch.empty(
+                    2,
+                    dtype=torch.int32,
+                    device="cpu",
+                    pin_memory=self.device.type == "cuda",
+                )
+                self._ft_dp_metadata_device = torch.empty(
+                    2, dtype=torch.int32, device=self.device
+                )
+                self._ft_dp_metadata_packed = torch.empty(
+                    self.world_size * 2,
+                    dtype=torch.int32,
+                    device=self.device,
+                )
+        assert self._ft_dp_metadata_host is not None
+        assert self._ft_dp_metadata_device is not None
+        assert self._ft_dp_metadata_packed is not None
+        return (
+            self._ft_dp_metadata_host,
+            self._ft_dp_metadata_device,
+            self._ft_dp_metadata_packed,
+        )
+
+    def set_ft_ep_active_mask(
+        self, failed_dp_ranks: tuple[int, ...], dp_size: int
+    ) -> list[bool]:
+        """Install framework-owned EP membership after a DP failure."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            raise RuntimeError("FT EP membership requires worker-failure survival.")
+        if dp_size <= 0 or self.world_size % dp_size != 0:
+            raise ValueError(
+                f"EP world size {self.world_size} is not divisible by DP size "
+                f"{dp_size}."
+            )
+        failed = set(failed_dp_ranks)
+        if any(rank < 0 or rank >= dp_size for rank in failed):
+            raise ValueError(f"Invalid failed DP ranks: {sorted(failed)}")
+
+        replicas_per_dp = self.world_size // dp_size
+        active_mask = [
+            ep_rank // replicas_per_dp not in failed
+            for ep_rank in range(self.world_size)
+        ]
+        if not active_mask[self.rank_in_group]:
+            raise RuntimeError(
+                "A withdrawn DP rank cannot install membership for subsequent "
+                "EP collectives."
+            )
+
+        ft_process_group = self._get_ft_process_group()
+        if not hasattr(ft_process_group, "set_active_mask"):
+            raise RuntimeError(
+                "Framework-managed FT EP membership requires "
+                "FTProcessGroup.set_active_mask()."
+            )
+        old_mask = self._get_ft_active_mask(ft_process_group)
+        ft_process_group.set_active_mask(active_mask)
+        self._ft_active_mask = active_mask
+        # This RPC runs between model steps, after all previous FT work has
+        # completed. Do not let a sticky timeout from the interrupted step
+        # poison the first collective under the newly installed membership.
+        ft_process_group.clear_error()
+        self._ft_result_mask = None
+        if active_mask != old_mask:
+            logger.warning(
+                "Installed framework-managed FT NCCL membership for group "
+                "'%s': %s -> %s.",
+                self.unique_name or "<unnamed>",
+                old_mask,
+                active_mask,
+            )
+        return active_mask
+
+    def ft_sync_dp_batch_sizes(
+        self, local_num_tokens: int, dp_size: int, cudagraph_mode: int
+    ) -> tuple[torch.Tensor, int]:
+        """Exchange DP token counts and CUDA graph mode over the FT EP group."""
+        if not self._should_use_ft_nccl_ep_communicator():
+            raise RuntimeError("FT DP batch-size sync requires the FT NCCL EP path.")
+        if self.world_size % dp_size != 0:
+            raise RuntimeError(
+                f"EP world size {self.world_size} is not divisible by DP size "
+                f"{dp_size}."
+            )
+
+        ft_process_group = self._get_ft_process_group()
+        for _ in range(self.world_size):
+            metadata_host, local_metadata, packed = self._get_ft_dp_metadata_buffers()
+            metadata_host[0] = local_num_tokens
+            metadata_host[1] = cudagraph_mode
+            local_metadata.copy_(metadata_host, non_blocking=True)
+            staging = self._get_ft_native_staging_view(
+                (2,),
+                local_metadata.dtype,
+                local_metadata.device,
+                "all-gatherv",
+                2,
+                2,
+            )
+            if staging is None:
+                raise RuntimeError("FT NCCL could not exchange DP batch metadata.")
+            self._copy_to_ft_staging(staging, local_metadata, ft_process_group)
+            work, recv_counts = ft_process_group.all_gatherv(
+                staging,
+                packed,
+                2,
+                2,
+            )
+            work.wait()
+
+            # The count exchange defines the shape of the whole forward pass.
+            # Complete it before accepting the metadata, but only once per step.
+            torch.cuda.current_stream(local_metadata.device).synchronize()
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                # FT_OK is already the desired sticky state. Avoid a redundant
+                # mapped-host write on every model step.
+                tokens_across_dp, synced_cudagraph_mode = _unpack_ft_dp_metadata(
+                    packed, recv_counts, dp_size
+                )
+                if synced_cudagraph_mode != 0 and bool(
+                    (recv_counts.cpu() == 0).any().item()
+                ):
+                    logger.warning_once(
+                        "FT EP membership is incomplete for group '%s'; "
+                        "retaining CUDA graph replay with active DP ranks "
+                        "padded to %d tokens.",
+                        self.unique_name or "<unnamed>",
+                        int(tokens_across_dp.max().item()),
+                    )
+                return tokens_across_dp, synced_cudagraph_mode
+
+            result_mask = self._record_ft_result_mask(ft_process_group)
+            old_mask = self._get_ft_active_mask(ft_process_group)
+            with torch.inference_mode(False):
+                ft_process_group.ft_converge()
+            new_mask = self._get_ft_active_mask(ft_process_group, refresh=True)
+            logger.warning(
+                "Retrying FT NCCL DP batch-size exchange for group '%s' after "
+                "status %s; observed responders: %s; membership changed from "
+                "%s to %s.",
+                self.unique_name or "<unnamed>",
+                status,
+                result_mask,
+                old_mask,
+                new_mask,
+            )
+            if new_mask == old_mask:
+                raise RuntimeError(
+                    "FT NCCL DP batch-size exchange failed, but convergence "
+                    "did not remove a rank from the active mask."
+                )
+
+        raise RuntimeError(
+            "FT NCCL DP batch-size exchange exhausted its membership-change "
+            "retry limit."
+        )
 
     def _get_ft_external_stream(self, ft_process_group):
         stream_ptr = getattr(ft_process_group, "_stream", None)
@@ -591,9 +910,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if dim < 0:
             dim += staging.dim()
         input_size = staging.size()
+        output_factory = (
+            torch.zeros if envs.VLLM_FT_SURVIVE_WORKER_FAILURE else torch.empty
+        )
 
         if dim == 0:
-            output_tensor = torch.empty(
+            output_tensor = output_factory(
                 (self.world_size * input_size[0],) + input_size[1:],
                 dtype=staging.dtype,
                 device=staging.device,
@@ -602,7 +924,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 (self.world_size,) + input_size
             ).unbind(0)
         else:
-            output_tensor = torch.empty(
+            output_tensor = output_factory(
                 (self.world_size,) + input_size,
                 dtype=staging.dtype,
                 device=staging.device,
@@ -625,6 +947,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         input_: torch.Tensor,
         dim: int = 0,
         sizes: list[int] | None = None,
+        check_status: bool = True,
     ) -> torch.Tensor | None:
         if dim != 0:
             return None
@@ -670,7 +993,15 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._ft_all_gatherv_send_counts[count_key] = device_send_counts
         # Record count initialization in every CUDA graph that uses this cache.
         device_send_counts.fill_(local_size)
-        output = torch.empty(output_shape, dtype=input_.dtype, device=input_.device)
+        # A dispatch transaction checks completion before exposing its outputs,
+        # so failed-attempt buffers do not need initialization. Direct gathers
+        # retain zero filling to keep absent-rank data safe after a timeout.
+        output_factory = (
+            torch.zeros
+            if envs.VLLM_FT_SURVIVE_WORKER_FAILURE and check_status
+            else torch.empty
+        )
+        output = output_factory(output_shape, dtype=input_.dtype, device=input_.device)
         work, _ = ft_process_group.all_gatherv(
             staging,
             output.view(sum(sizes), row_width),
@@ -678,8 +1009,93 @@ class CudaCommunicator(DeviceCommunicatorBase):
             max_size,
         )
         work.wait()
-        self._check_ft_nccl_status(ft_process_group)
+        if check_status:
+            self._check_ft_nccl_status(ft_process_group)
         return output
+
+    def _ft_nccl_all_gatherv_transaction(
+        self,
+        inputs: list[torch.Tensor],
+        dim: int,
+        sizes: list[int] | None,
+    ) -> list[torch.Tensor]:
+        """Gather an EP dispatch payload atomically across membership changes."""
+        if not inputs:
+            return []
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError(
+                "FT NCCL dispatch retry requires eager execution because it "
+                "checks collective status between dispatch attempts."
+            )
+
+        ft_process_group = self._get_ft_process_group()
+        original_sizes = (
+            list(sizes)
+            if sizes is not None
+            else [inputs[0].shape[dim]] * self.world_size
+        )
+        if len(original_sizes) != self.world_size:
+            raise ValueError(
+                f"Expected {self.world_size} all-gatherv sizes, got "
+                f"{len(original_sizes)}."
+            )
+
+        active_mask = self._get_ft_active_mask(ft_process_group)
+        for attempt in range(self.world_size):
+            if not active_mask[self.rank_in_group]:
+                raise RuntimeError(
+                    "The local rank was removed from the FT NCCL active mask."
+                )
+            active_sizes = [
+                size if active else 0
+                for size, active in zip(original_sizes, active_mask)
+            ]
+            outputs = []
+            for input_tensor in inputs:
+                output = self._ft_nccl_native_all_gatherv(
+                    input_tensor,
+                    dim,
+                    active_sizes,
+                    check_status=False,
+                )
+                if output is None:
+                    raise RuntimeError(
+                        "FT NCCL dispatch retry requires every payload to use "
+                        "the native all-gatherv path."
+                    )
+                outputs.append(output)
+
+            # Every work item has ordered this stream after the private FT stream.
+            # One host synchronization therefore completes the whole dispatch.
+            torch.cuda.current_stream(inputs[0].device).synchronize()
+            status = ft_process_group.get_error()
+            if status == self._ft_ok_status:
+                # A successful transaction leaves the sticky flag at FT_OK.
+                return outputs
+
+            result_mask = self._record_ft_result_mask(ft_process_group)
+            old_mask = active_mask
+            with torch.inference_mode(False):
+                ft_process_group.ft_converge()
+            active_mask = self._get_ft_active_mask(ft_process_group, refresh=True)
+            logger.warning(
+                "Retrying FT NCCL dispatch for group '%s' after status %s; "
+                "observed responders: %s; membership changed from %s to %s.",
+                self.unique_name or "<unnamed>",
+                status,
+                result_mask,
+                old_mask,
+                active_mask,
+            )
+            if active_mask == old_mask:
+                raise RuntimeError(
+                    "FT NCCL dispatch failed, but convergence did not remove "
+                    "a rank from the active mask."
+                )
+
+        raise RuntimeError(
+            "FT NCCL dispatch exhausted its membership-change retry limit."
+        )
 
     def _ft_nccl_native_reduce_scatterv(
         self, input_: torch.Tensor, dim: int = -1, sizes: list[int] | None = None
@@ -826,7 +1242,14 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self, input_: torch.Tensor, dim: int = -1, sizes: list[int] | None = None
     ):
         if self._should_use_ft_nccl_ep_communicator():
-            out = self._ft_nccl_native_reduce_scatterv(input_, dim, sizes)
+            ft_sizes = sizes
+            if envs.VLLM_FT_SURVIVE_WORKER_FAILURE and sizes is not None:
+                ft_process_group = self._get_ft_process_group()
+                active_mask = self._get_ft_active_mask(ft_process_group)
+                ft_sizes = [
+                    size if active else 0 for size, active in zip(sizes, active_mask)
+                ]
+            out = self._ft_nccl_native_reduce_scatterv(input_, dim, ft_sizes)
             if out is not None:
                 return out
 
@@ -905,6 +1328,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def destroy(self):
         self._ft_staging_workspaces.clear()
         self._ft_all_gatherv_send_counts.clear()
+        self._ft_active_mask = None
+        self._ft_result_mask = None
+        self._ft_dp_metadata_host = None
+        self._ft_dp_metadata_device = None
+        self._ft_dp_metadata_packed = None
         self._ft_external_stream = None
         self._ft_process_group = None
         if self._ft_torch_group is not None:
@@ -975,6 +1403,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
             return _all_gather_single(input_, sizes)
 
         if self._should_use_ft_nccl_ep_communicator():
+            if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+                return self._ft_nccl_all_gatherv_transaction(input_, dim, sizes)
             return [_all_gather_single(inp, sizes=sizes) for inp in input_]
 
         assert pynccl_comm is not None and not pynccl_comm.disabled

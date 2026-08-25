@@ -11,11 +11,13 @@ import multiprocessing
 import os
 import socket
 
+import pytest
+
 from tests.utils import multi_gpu_test
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import EngineArgs
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.executor.multiproc_executor import MultiprocExecutor
+from vllm.v1.executor.multiproc_executor import MultiprocExecutor, WorkerDiedError
 
 MODEL = "facebook/opt-125m"
 
@@ -169,6 +171,17 @@ def test_multiproc_executor_failure_callback():
     finally:
         # Clean up
         executor.shutdown()
+
+
+def test_ft_rpc_detects_death_of_non_output_worker():
+    executor = object.__new__(MultiprocExecutor)
+    executor._dead_worker_ranks = {1}
+
+    with pytest.raises(WorkerDiedError, match=r"Worker\(s\) \[1\] died"):
+        executor._raise_if_worker_died_since(frozenset(), "sample_tokens")
+
+    # RPCs started after withdrawal operate on the remaining worker set.
+    executor._raise_if_worker_died_since(frozenset({1}), "ft_recovery")
 
 
 @multi_gpu_test(num_gpus=2)

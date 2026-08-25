@@ -61,6 +61,45 @@ def test_decorator_passthrough_outside_capture():
     assert calls == [3]
 
 
+def test_wrapper_cache_separates_full_and_piecewise_modes(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm.compilation import breakable_cudagraph
+    from vllm.config import CUDAGraphMode
+    from vllm.forward_context import BatchDescriptor
+
+    wrapper = object.__new__(breakable_cudagraph.BreakableCUDAGraphWrapper)
+    wrapper.runnable = lambda: None
+    wrapper.entries = {}
+    wrapper.is_debugging_mode = False
+
+    descriptor = BatchDescriptor(num_tokens=8)
+    context = SimpleNamespace(
+        batch_descriptor=descriptor,
+        cudagraph_runtime_mode=CUDAGraphMode.FULL,
+    )
+    monkeypatch.setattr(
+        breakable_cudagraph, "is_forward_context_available", lambda: True
+    )
+    monkeypatch.setattr(breakable_cudagraph, "get_forward_context", lambda: context)
+
+    captures = []
+
+    def fake_capture(entry, args, kwargs):
+        captures.append(entry.runtime_mode)
+        entry.capture = object()
+        return entry.runtime_mode
+
+    wrapper._capture = fake_capture
+    wrapper._replay = lambda entry, args, kwargs: entry.runtime_mode
+
+    assert wrapper() == CUDAGraphMode.FULL
+    context.cudagraph_runtime_mode = CUDAGraphMode.PIECEWISE
+    assert wrapper() == CUDAGraphMode.PIECEWISE
+    assert captures == [CUDAGraphMode.FULL, CUDAGraphMode.PIECEWISE]
+    assert len(wrapper.entries) == 2
+
+
 # ---------------------------------------------------------------------------
 # BreakableCUDAGraphCapture: thread-local + nested rejection
 # ---------------------------------------------------------------------------
@@ -259,6 +298,152 @@ def test_decorator_breaks_when_invoked_inside_capture(cuda_capture_stream):
     cap.replay()
     torch.accelerator.synchronize()
     assert torch.equal(x, torch.full((4,), 15.0, device="cuda"))
+
+
+def _set_full_cudagraph_forward_context(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm.compilation import breakable_cudagraph
+    from vllm.config import CUDAGraphMode
+
+    monkeypatch.setattr(
+        breakable_cudagraph, "is_forward_context_available", lambda: True
+    )
+    monkeypatch.setattr(
+        breakable_cudagraph,
+        "get_forward_context",
+        lambda: SimpleNamespace(cudagraph_runtime_mode=CUDAGraphMode.FULL),
+    )
+
+
+def test_ft_moe_break_skips_collective_during_full_capture(
+    monkeypatch, cuda_capture_stream
+):
+    """MoE graph construction initializes persistent output without running
+    the distributed transaction; replay runs the transaction eagerly."""
+    from vllm.model_executor.layers.fused_moe.runner import moe_runner
+
+    _set_full_cudagraph_forward_context(monkeypatch)
+    calls = {"real_moe": 0}
+
+    def fake_moe_forward(
+        hidden_states,
+        router_logits,
+        shared_experts_input,
+        input_ids,
+        layer_name,
+        hidden_dim_unpadded,
+    ):
+        calls["real_moe"] += 1
+        return hidden_states * 3
+
+    monkeypatch.setattr(moe_runner, "_moe_forward", fake_moe_forward)
+
+    hidden_states = torch.full((4,), 2.0, device="cuda")
+    router_logits = torch.empty((4,), device="cuda")
+    output = torch.empty_like(hidden_states)
+    downstream = torch.empty_like(hidden_states)
+
+    cap = moe_runner.BreakableCUDAGraphCapture()
+    with cap:
+        hidden_states.add_(0.0)
+        moe_runner._moe_forward_with_output(
+            hidden_states,
+            router_logits,
+            None,
+            None,
+            output,
+            "unused",
+            0,
+        )
+        downstream.copy_(output + 1)
+
+    torch.accelerator.synchronize()
+    assert calls["real_moe"] == 0
+
+    for replay_count, value in enumerate((2.0, 4.0, 7.0), start=1):
+        hidden_states.fill_(value)
+        cap.replay()
+        torch.accelerator.synchronize()
+        assert calls["real_moe"] == replay_count
+        assert torch.equal(output, torch.full_like(output, value * 3))
+        assert torch.equal(downstream, torch.full_like(downstream, value * 3 + 1))
+
+
+def test_ft_shared_moe_break_replays_both_outputs_in_full_mode(
+    monkeypatch, cuda_capture_stream
+):
+    """The shared-expert eager break refreshes both persistent outputs on
+    every replay before the following graph segment consumes them."""
+    from vllm.model_executor.layers.fused_moe.runner import moe_runner
+
+    _set_full_cudagraph_forward_context(monkeypatch)
+    calls = {"real_moe": 0}
+
+    def fake_moe_forward_shared(
+        hidden_states,
+        router_logits,
+        shared_experts_input,
+        input_ids,
+        layer_name,
+        hidden_dim_unpadded,
+    ):
+        calls["real_moe"] += 1
+        assert shared_experts_input is not None
+        return shared_experts_input * 2, hidden_states * 3
+
+    monkeypatch.setattr(moe_runner, "_moe_forward_shared", fake_moe_forward_shared)
+
+    hidden_states = torch.zeros(4, device="cuda")
+    shared_experts_input = torch.zeros(4, device="cuda")
+    router_logits = torch.empty(4, device="cuda")
+    shared_output = torch.empty_like(shared_experts_input)
+    fused_output = torch.empty_like(hidden_states)
+    downstream = torch.empty_like(hidden_states)
+
+    cap = moe_runner.BreakableCUDAGraphCapture()
+    with cap:
+        hidden_states.add_(0.0)
+        shared_experts_input.add_(0.0)
+        moe_runner._moe_forward_shared_with_output(
+            hidden_states,
+            router_logits,
+            shared_experts_input,
+            None,
+            shared_output,
+            fused_output,
+            "unused",
+            0,
+        )
+        downstream.copy_(shared_output + fused_output)
+
+    torch.accelerator.synchronize()
+    assert calls["real_moe"] == 0
+
+    replay_values = ((2.0, 5.0), (4.0, 3.0), (7.0, 11.0))
+    for replay_count, (hidden_value, shared_value) in enumerate(replay_values, start=1):
+        hidden_states.fill_(hidden_value)
+        shared_experts_input.fill_(shared_value)
+        cap.replay()
+        torch.accelerator.synchronize()
+        assert calls["real_moe"] == replay_count
+        assert torch.equal(
+            shared_output, torch.full_like(shared_output, shared_value * 2)
+        )
+        assert torch.equal(
+            fused_output, torch.full_like(fused_output, hidden_value * 3)
+        )
+        expected = shared_value * 2 + hidden_value * 3
+        assert torch.equal(downstream, torch.full_like(downstream, expected))
+
+
+def test_breakable_graph_disables_shared_expert_stream_overlap():
+    from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
+        SharedExperts,
+    )
+
+    shared_experts = object.__new__(SharedExperts)
+    assert shared_experts._disable_shared_experts_overlap
 
 
 # ---------------------------------------------------------------------------

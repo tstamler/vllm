@@ -65,7 +65,10 @@ class AgRsAll2AllManager(All2AllManagerBase):
         sizes = dp_metadata.get_chunk_sizes_across_dp_rank()
         assert sizes is not None
         dist_group = get_ep_group() if is_sequence_parallel else get_dp_group()
-        assert sizes[dist_group.rank_in_group] == hidden_states.shape[0]
+        assert sizes[dist_group.rank_in_group] == hidden_states.shape[0], (
+            f"dispatch metadata sizes={sizes}, group_rank={dist_group.rank_in_group}, "
+            f"local_hidden_rows={hidden_states.shape[0]}"
+        )
 
         tensors_to_gather = [hidden_states, router_logits]
         if extra_tensors is not None:
@@ -100,7 +103,10 @@ class AgRsAll2AllManager(All2AllManagerBase):
         sizes = dp_metadata.get_chunk_sizes_across_dp_rank()
         assert sizes is not None
         dist_group = get_ep_group() if is_sequence_parallel else get_dp_group()
-        assert sizes[dist_group.rank_in_group] == hidden_states.shape[0]
+        assert sizes[dist_group.rank_in_group] == hidden_states.shape[0], (
+            f"dispatch metadata sizes={sizes}, group_rank={dist_group.rank_in_group}, "
+            f"local_hidden_rows={hidden_states.shape[0]}"
+        )
 
         tensors_to_gather = [hidden_states, topk_weights, topk_ids]
         if extra_tensors is not None:

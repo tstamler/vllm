@@ -33,6 +33,7 @@ from vllm.distributed.kv_transfer import (
 )
 from vllm.distributed.parallel_state import (
     Handle,
+    get_ep_group,
     get_pp_group,
     get_tp_group,
 )
@@ -153,6 +154,7 @@ class Worker(WorkerBase):
         self.use_v2_model_runner = vllm_config.use_v2_model_runner
         # pending non-blocking PP send work from the previous iteration
         self._pp_send_work: list[Handle] = []
+        self._ft_rejoin_ack_dir = envs.VLLM_FT_REJOIN_ACK_DIR
 
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -775,7 +777,23 @@ class Worker(WorkerBase):
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
-        return self.model_runner.sample_tokens(grammar_output)
+        output = self.model_runner.sample_tokens(grammar_output)
+        return self._attach_ft_ep_result_mask(output)
+
+    def _attach_ft_ep_result_mask(
+        self, output: ModelRunnerOutput | AsyncModelRunnerOutput
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return output
+        communicator = get_ep_group().device_communicator
+        get_result_mask = (
+            getattr(communicator, "get_ft_result_mask", None)
+            if communicator is not None
+            else None
+        )
+        if get_result_mask is not None:
+            output.ft_ep_result_mask = get_result_mask()
+        return output
 
     @torch.inference_mode()
     def execute_model(
@@ -850,7 +868,9 @@ class Worker(WorkerBase):
             if isinstance(
                 output, ModelRunnerOutput | AsyncModelRunnerOutput | NoneType
             ):
-                return output
+                if output is not None:
+                    return self._attach_ft_ep_result_mask(output)
+                return None
 
         assert isinstance(output, IntermediateTensors)
         parallel_config = self.vllm_config.parallel_config
@@ -867,6 +887,59 @@ class Worker(WorkerBase):
         )
 
         return None
+
+    def set_ft_ep_active_mask(
+        self, failed_dp_ranks: tuple[int, ...], dp_size: int
+    ) -> None:
+        """Install the framework-agreed EP mask between model steps."""
+        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
+            return
+        communicator = get_ep_group().device_communicator
+        if communicator is None:
+            return
+        set_active_mask = getattr(communicator, "set_ft_ep_active_mask", None)
+        if set_active_mask is None:
+            raise RuntimeError(
+                "FT failure survival requires communicator support for "
+                "framework-managed EP membership."
+            )
+        set_active_mask(failed_dp_ranks, dp_size)
+
+    def execute_ft_rejoin_group(self, group_name: str) -> list[bool]:
+        """Rejoin one communicator phase under EngineCore coordination."""
+        if group_name == "TP":
+            group = get_tp_group()
+        elif group_name == "EP":
+            group = get_ep_group()
+        else:
+            raise ValueError(f"Unknown FT rejoin group: {group_name}")
+        communicator = group.device_communicator
+        if communicator is None:
+            return []
+        rejoin = getattr(communicator, "rejoin_ft_membership", None)
+        if rejoin is None:
+            raise RuntimeError("FT rank rejoin requires communicator rejoin support.")
+        logger.warning(
+            "Entering FT NCCL %s rejoin for rank %d.", group_name, self.rank
+        )
+        membership = list(rejoin() or [])
+        logger.warning(
+            "Finished FT NCCL %s rejoin for rank %d: %s.",
+            group_name,
+            self.rank,
+            membership,
+        )
+        return membership
+
+    def complete_ft_rejoin_generation(self, generation: str) -> None:
+        """Commit a globally successful generation and publish its ack."""
+        if ack_dir := self._ft_rejoin_ack_dir:
+            os.makedirs(ack_dir, exist_ok=True)
+            ep_rank = get_ep_group().rank_in_group
+            ack_path = os.path.join(ack_dir, f"{generation}.rank-{ep_rank}.ack")
+            with open(ack_path, "w", encoding="utf-8") as ack_file:
+                ack_file.write(f"rank={ep_rank}\n")
+        logger.warning("Completed FT NCCL rejoin generation %s.", generation)
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()

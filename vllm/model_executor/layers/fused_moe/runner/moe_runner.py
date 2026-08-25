@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn.functional as F
 
+import vllm.envs as envs
+from vllm.compilation.breakable_cudagraph import (
+    BreakableCUDAGraphCapture,
+    eager_break_during_capture,
+)
 from vllm.distributed import (
     get_ep_group,
     get_pcp_group,
@@ -164,6 +169,87 @@ def _moe_forward_shared_fake(
     return shared_out, fused_out
 
 
+@eager_break_during_capture(break_full_graph=True)
+def _moe_forward_with_output(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    shared_experts_input: torch.Tensor | None,
+    input_ids: torch.Tensor | None,
+    output: torch.Tensor,
+    layer_name: _layer_name_type,
+    hidden_dim_unpadded: int,
+) -> None:
+    # Workers capture graphs independently, so entering an EP collective here
+    # would turn graph construction into an implicit distributed protocol.
+    # Warmup has already initialized the kernels. Initialize the persistent
+    # output only; the recorded eager callback runs the real transaction.
+    if BreakableCUDAGraphCapture.is_active():
+        output.zero_()
+        return
+    output.copy_(
+        _moe_forward(
+            hidden_states,
+            router_logits,
+            shared_experts_input,
+            input_ids,
+            layer_name,
+            hidden_dim_unpadded,
+        )
+    )
+
+
+def _moe_forward_with_output_fake(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    shared_experts_input: torch.Tensor | None,
+    input_ids: torch.Tensor | None,
+    output: torch.Tensor,
+    layer_name: _layer_name_type,
+    hidden_dim_unpadded: int,
+) -> None:
+    return
+
+
+@eager_break_during_capture(break_full_graph=True)
+def _moe_forward_shared_with_output(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    shared_experts_input: torch.Tensor | None,
+    input_ids: torch.Tensor | None,
+    shared_output: torch.Tensor,
+    fused_output: torch.Tensor,
+    layer_name: _layer_name_type,
+    hidden_dim_unpadded: int,
+) -> None:
+    if BreakableCUDAGraphCapture.is_active():
+        shared_output.zero_()
+        fused_output.zero_()
+        return
+    shared_result, fused_result = _moe_forward_shared(
+        hidden_states,
+        router_logits,
+        shared_experts_input,
+        input_ids,
+        layer_name,
+        hidden_dim_unpadded,
+    )
+    shared_output.copy_(shared_result)
+    fused_output.copy_(fused_result)
+
+
+def _moe_forward_shared_with_output_fake(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    shared_experts_input: torch.Tensor | None,
+    input_ids: torch.Tensor | None,
+    shared_output: torch.Tensor,
+    fused_output: torch.Tensor,
+    layer_name: _layer_name_type,
+    hidden_dim_unpadded: int,
+) -> None:
+    return
+
+
 # NOTE: `moe_forward` and `moe_forward_shared` being opaque custom ops is a
 # load-bearing assumption for the MoE-LoRA dual-stream path.
 direct_register_custom_op(
@@ -179,6 +265,24 @@ direct_register_custom_op(
     op_name="moe_forward_shared",
     op_func=_moe_forward_shared,
     fake_impl=_moe_forward_shared_fake,
+    tags=(torch.Tag.needs_fixed_stride_order,),
+)
+
+
+direct_register_custom_op(
+    op_name="moe_forward_with_output",
+    op_func=_moe_forward_with_output,
+    mutates_args=["output"],
+    fake_impl=_moe_forward_with_output_fake,
+    tags=(torch.Tag.needs_fixed_stride_order,),
+)
+
+
+direct_register_custom_op(
+    op_name="moe_forward_shared_with_output",
+    op_func=_moe_forward_shared_with_output,
+    mutates_args=["shared_output", "fused_output"],
+    fake_impl=_moe_forward_shared_with_output_fake,
     tags=(torch.Tag.needs_fixed_stride_order,),
 )
 
@@ -274,11 +378,63 @@ class MoERunner(MoERunnerInterface):
             # Note: CPU doesn't require wrapped _forward_impl.
             return _moe_forward if self._shared_experts is None else _moe_forward_shared
 
+        if envs.VLLM_USE_BREAKABLE_CUDAGRAPH:
+            return self._forward_breakable_cudagraph
+
         return (
             torch.ops.vllm.moe_forward
             if self._shared_experts is None
             else torch.ops.vllm.moe_forward_shared
         )
+
+    def _forward_breakable_cudagraph(
+        self,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        shared_experts_input: torch.Tensor | None,
+        input_ids: torch.Tensor | None,
+        layer_name: _layer_name_type,
+        hidden_dim_unpadded: int,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if self._shared_experts is None:
+            output = _moe_forward_fake(
+                hidden_states,
+                router_logits,
+                shared_experts_input,
+                input_ids,
+                layer_name,
+                hidden_dim_unpadded,
+            )
+            torch.ops.vllm.moe_forward_with_output(
+                hidden_states,
+                router_logits,
+                shared_experts_input,
+                input_ids,
+                output,
+                layer_name,
+                hidden_dim_unpadded,
+            )
+            return output
+
+        shared_output, fused_output = _moe_forward_shared_fake(
+            hidden_states,
+            router_logits,
+            shared_experts_input,
+            input_ids,
+            layer_name,
+            hidden_dim_unpadded,
+        )
+        torch.ops.vllm.moe_forward_shared_with_output(
+            hidden_states,
+            router_logits,
+            shared_experts_input,
+            input_ids,
+            shared_output,
+            fused_output,
+            layer_name,
+            hidden_dim_unpadded,
+        )
+        return shared_output, fused_output
 
     @property
     def shared_experts(self) -> SharedExperts | None:

@@ -28,7 +28,7 @@ import gc
 import threading
 import weakref
 from collections.abc import Callable
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar, overload
 
 import torch
 
@@ -56,7 +56,19 @@ def is_breakable_cudagraph_enabled() -> bool:
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def eager_break_during_capture(fn: F) -> F:
+@overload
+def eager_break_during_capture(fn: F, *, break_full_graph: bool = False) -> F: ...
+
+
+@overload
+def eager_break_during_capture(
+    fn: None = None, *, break_full_graph: bool = False
+) -> Callable[[F], F]: ...
+
+
+def eager_break_during_capture(
+    fn: F | None = None, *, break_full_graph: bool = False
+) -> F | Callable[[F], F]:
     """Decorator that turns a custom-op Python kernel into a "break point"
     for the breakable cudagraph capture.
 
@@ -86,7 +98,16 @@ def eager_break_during_capture(fn: F) -> F:
         @maybe_transfer_kv_layer
         def unified_attention_with_output(...):
             ...
+
+    By default, an operation runs inline while a FULL graph is being
+    captured. Set ``break_full_graph=True`` for operations that must remain
+    eager in every runtime mode, such as a membership-dependent collective.
     """
+    if fn is None:
+        return lambda decorated_fn: eager_break_during_capture(
+            decorated_fn, break_full_graph=break_full_graph
+        )
+
     if not is_breakable_cudagraph_enabled():
         return fn
 
@@ -99,7 +120,7 @@ def eager_break_during_capture(fn: F) -> F:
             return fn(*args, **kwargs)
         if is_forward_context_available():
             mode = get_forward_context().cudagraph_runtime_mode
-            if mode == CUDAGraphMode.FULL:
+            if mode == CUDAGraphMode.FULL and not break_full_graph:
                 return fn(*args, **kwargs)
 
         # Weak-ref args: strong refs in the replay lambda pin cudagraph-pool
@@ -237,6 +258,7 @@ class BreakableCUDAGraphCapture:
 
 @dataclasses.dataclass
 class _BreakableEntry:
+    runtime_mode: CUDAGraphMode
     batch_descriptor: BatchDescriptor
     capture: BreakableCUDAGraphCapture | None = None
     output: Any = None
@@ -271,18 +293,17 @@ class BreakableCUDAGraphWrapper:
         vllm_config: VllmConfig,
     ) -> None:
         # Unlike the original CUDAGraphWrapper which strictly matches a
-        # single runtime_mode, this wrapper captures whatever the
-        # dispatcher emits (any non-NONE runtime_mode) -- breakable's
-        # capture is identical for prefill and decode, so there's nothing
-        # to dispatch on at the runtime_mode level. Entries are keyed by
-        # BatchDescriptor which already encodes batch shape / uniformity.
+        # single runtime_mode, this wrapper captures whatever non-NONE mode
+        # the dispatcher emits. Runtime mode remains part of the cache key:
+        # FULL and PIECEWISE can use different eager-break policies even when
+        # their batch descriptors happen to match.
         self.runnable = runnable
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.graph_pool = current_platform.get_global_graph_pool()
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
 
-        self.entries: dict[BatchDescriptor, _BreakableEntry] = {}
+        self.entries: dict[tuple[CUDAGraphMode, BatchDescriptor], _BreakableEntry] = {}
         BreakableCUDAGraphWrapper._all_instances.add(self)
 
         logger.info_once("Breakable CUDA graph enabled")
@@ -315,18 +336,21 @@ class BreakableCUDAGraphWrapper:
         batch_descriptor = forward_context.batch_descriptor
         cudagraph_runtime_mode = forward_context.cudagraph_runtime_mode
 
-        # Capture whenever the dispatcher says "some cudagraph mode" --
-        # breakable produces the same artifact regardless of PIECEWISE
-        # vs FULL, so we match either. Entries are keyed by batch
-        # descriptor, which already encodes prefill/decode distinctions.
+        # Capture whenever the dispatcher selects a non-NONE mode. Keep FULL
+        # and PIECEWISE entries separate because their eager-break policies
+        # can differ even for an otherwise identical batch descriptor.
         if cudagraph_runtime_mode == CUDAGraphMode.NONE:
             return self.runnable(*args, **kwargs)
 
         assert batch_descriptor is not None
-        entry = self.entries.get(batch_descriptor)
+        entry_key = (cudagraph_runtime_mode, batch_descriptor)
+        entry = self.entries.get(entry_key)
         if entry is None:
-            entry = _BreakableEntry(batch_descriptor=batch_descriptor)
-            self.entries[batch_descriptor] = entry
+            entry = _BreakableEntry(
+                runtime_mode=cudagraph_runtime_mode,
+                batch_descriptor=batch_descriptor,
+            )
+            self.entries[entry_key] = entry
 
         if entry.capture is None:
             return self._capture(entry, args, kwargs)
@@ -395,7 +419,8 @@ class BreakableCUDAGraphWrapper:
         entry.output = weak_ref_tensors(output)
 
         logger.debug(
-            "Captured breakable cudagraph for %s: %r",
+            "Captured breakable %s cudagraph for %s: %r",
+            entry.runtime_mode.name,
             entry.batch_descriptor,
             capture,
         )

@@ -236,6 +236,14 @@ class EngineCoreOutputs(
     # "old" wave, so the next wave needs to be started in other engines.
     start_wave: int | None = None
 
+    # Experimental FT path: this DP engine lost a local TP worker and must no
+    # longer receive serving requests, but remains alive for EP participation.
+    tp_degraded: int | None = None
+
+    # Experimental FT path: update one DP engine's routing availability. Unlike
+    # tp_degraded, an unavailable engine can become available after ft_rejoin.
+    dp_engine_available: tuple[int, bool] | None = None
+
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.monotonic()

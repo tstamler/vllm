@@ -372,6 +372,7 @@ class MessageQueue:
         else:
             assert len(local_reader_ranks) == n_local_reader
         self.n_local_reader = n_local_reader
+        self._dead_local_readers: set[int] = set()
         n_remote_reader = n_reader - n_local_reader
         self.n_remote_reader = n_remote_reader
         self.shutting_down = False
@@ -538,6 +539,11 @@ class MessageQueue:
         if self._spin_condition is not None:
             self._spin_condition.cancel()
 
+    def mark_reader_dead(self, local_reader_idx: int) -> None:
+        """Exclude a dead local reader from writer flow control."""
+        if self.buffer is not None and 0 <= local_reader_idx < self.n_local_reader:
+            self._dead_local_readers.add(local_reader_idx)
+
     @contextmanager
     def acquire_write(self, timeout: float | None = None):
         assert self._is_writer, "Only writers can acquire write"
@@ -548,9 +554,20 @@ class MessageQueue:
 
                 def check():
                     memory_fence()
-                    read_count = sum(metadata_buffer[1:])
                     written_flag = metadata_buffer[0]
-                    return not (written_flag and read_count != self.buffer.n_reader)
+                    if self._dead_local_readers:
+                        read_count = sum(
+                            metadata_buffer[i + 1]
+                            for i in range(self.buffer.n_reader)
+                            if i not in self._dead_local_readers
+                        )
+                        live_reader_count = self.buffer.n_reader - len(
+                            self._dead_local_readers
+                        )
+                    else:
+                        read_count = sum(metadata_buffer[1:])
+                        live_reader_count = self.buffer.n_reader
+                    return not (written_flag and read_count != live_reader_count)
 
                 if envs.VLLM_USE_SPINLOOP_EXT and not check():
                     spinloop(metadata_buffer, check, timeout=SPINLOOP_TIMEOUT_SECONDS)

@@ -697,6 +697,53 @@ class ParallelConfig:
         return has_unfinished_global, pause_count == dp_size
 
     @staticmethod
+    def sync_ft_dp_state(
+        dp_group: ProcessGroup,
+        has_unfinished: bool,
+        pending_pause: bool,
+        rejoin_requested: bool,
+        rejoin_ready: bool,
+        active_dp_ranks: tuple[int, ...] | None,
+        failed_dp_ranks: tuple[int, ...],
+    ) -> tuple[bool, bool, bool, bool, tuple[int, ...]]:
+        """Synchronize scheduling state and choose the majority FT component."""
+        dp_size = dp_group.size()
+        tensor = torch.zeros(5 + 2 * dp_size, dtype=torch.int32, device="cpu")
+        tensor[0] = int(has_unfinished)
+        tensor[1] = int(pending_pause)
+        tensor[3] = int(rejoin_requested)
+        tensor[4] = int(rejoin_ready)
+        if active_dp_ranks is not None:
+            tensor[2] = 1
+            for active_dp_rank in active_dp_ranks:
+                tensor[5 + active_dp_rank] = 1
+        for failed_dp_rank in failed_dp_ranks:
+            tensor[5 + dp_size + failed_dp_rank] = 1
+        torch.distributed.all_reduce(tensor, op=ReduceOp.SUM, group=dp_group)
+
+        pause_count = tensor[1].item()
+        has_unfinished_global = tensor[0].item() > 0 or pause_count % dp_size != 0
+        observations = tensor[2].item()
+        rejoin_requested_consensus = tensor[3].item() == dp_size
+        rejoin_ready_consensus = tensor[4].item() == dp_size
+        active_votes = tensor[5 : 5 + dp_size]
+        hard_failures = tensor[5 + dp_size :]
+        failed_dp_ranks = tuple(
+            rank
+            for rank in range(dp_size)
+            if hard_failures[rank].item() > 0
+            or observations > 0
+            and 2 * active_votes[rank].item() <= observations
+        )
+        return (
+            has_unfinished_global,
+            pause_count == dp_size,
+            rejoin_requested_consensus,
+            rejoin_ready_consensus,
+            failed_dp_ranks,
+        )
+
+    @staticmethod
     def sync_kv_cache_memory_size(dp_group: ProcessGroup, kv_cache_memory: int) -> int:
         if kv_cache_memory == -1:
             kv_cache_memory = torch.iinfo(torch.int64).max
