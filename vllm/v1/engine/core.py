@@ -1691,6 +1691,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self._ft_installed_failures: tuple[int, ...] = ()
         self._ft_rejoin_trigger = envs.VLLM_FT_REJOIN_TRIGGER_FILE
         self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
+        self._ft_rejoin_max_attempts = envs.VLLM_FT_REJOIN_MAX_ATTEMPTS
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
 
@@ -1928,9 +1929,48 @@ class DPEngineCoreProc(EngineCoreProc):
             self.dp_rank,
             generation,
         )
+        import torch
+        import torch.distributed as dist
+
+        for attempt in range(1, self._ft_rejoin_max_attempts + 1):
+            self.barrier()
+            tp_memberships = self.model_executor.collective_rpc(
+                "execute_ft_rejoin_group", args=("TP",)
+            )
+            self.barrier()
+            ep_memberships = self.model_executor.collective_rpc(
+                "execute_ft_rejoin_group", args=("EP",)
+            )
+
+            local_full = all(
+                membership and all(membership)
+                for membership in (*tp_memberships, *ep_memberships)
+            )
+            full = torch.tensor(int(local_full), dtype=torch.int32)
+            dist.all_reduce(full, op=dist.ReduceOp.MIN, group=self.dp_group)
+            if full.item():
+                break
+            logger.warning(
+                "FT NCCL rejoin generation %s attempt %d/%d remained "
+                "incomplete on DP rank %d: TP=%s EP=%s.",
+                generation,
+                attempt,
+                self._ft_rejoin_max_attempts,
+                self.dp_rank,
+                tp_memberships,
+                ep_memberships,
+            )
+        else:
+            raise RuntimeError(
+                f"FT NCCL rejoin generation {generation} did not converge after "
+                f"{self._ft_rejoin_max_attempts} attempts."
+            )
+
+        self.barrier()
         self.model_executor.collective_rpc(
-            "execute_ft_rejoin_generation", args=(generation,)
+            "complete_ft_rejoin_generation", args=(generation,)
         )
+        self.barrier()
         self._ft_rejoin_generation = generation
 
     def _run_with_ft_worker_death_guard(

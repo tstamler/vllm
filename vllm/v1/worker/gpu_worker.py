@@ -933,30 +933,53 @@ class Worker(WorkerBase):
         # Restore independent TP groups before entering the full-world EP
         # rejoin. The readiness protocol below keeps every rank participating
         # until all ranks have observed the restored EP membership.
-        for group_name, group in (("TP", get_tp_group()), ("EP", get_ep_group())):
+        for group_name in ("TP", "EP"):
             if group_name == "EP" and before_ep is not None:
                 before_ep()
+            group = get_tp_group() if group_name == "TP" else get_ep_group()
             communicator = group.device_communicator
             if communicator is None or id(communicator) in seen:
                 continue
             seen.add(id(communicator))
-            rejoin = getattr(communicator, "rejoin_ft_membership", None)
-            if rejoin is None:
-                raise RuntimeError(
-                    "FT rank rejoin requires communicator rejoin support."
-                )
-            logger.warning(
-                "Entering FT NCCL %s rejoin for rank %d.", group_name, self.rank
-            )
-            if membership := rejoin():
+            if membership := self.execute_ft_rejoin_group(group_name):
                 memberships.append(membership)
-            logger.warning(
-                "Finished FT NCCL %s rejoin for rank %d: %s.",
-                group_name,
-                self.rank,
-                membership,
-            )
         return memberships
+
+    def execute_ft_rejoin_group(self, group_name: str) -> list[bool]:
+        """Rejoin one communicator phase under EngineCore coordination."""
+        if group_name == "TP":
+            group = get_tp_group()
+        elif group_name == "EP":
+            group = get_ep_group()
+        else:
+            raise ValueError(f"Unknown FT rejoin group: {group_name}")
+        communicator = group.device_communicator
+        if communicator is None:
+            return []
+        rejoin = getattr(communicator, "rejoin_ft_membership", None)
+        if rejoin is None:
+            raise RuntimeError("FT rank rejoin requires communicator rejoin support.")
+        logger.warning(
+            "Entering FT NCCL %s rejoin for rank %d.", group_name, self.rank
+        )
+        membership = list(rejoin() or [])
+        logger.warning(
+            "Finished FT NCCL %s rejoin for rank %d: %s.",
+            group_name,
+            self.rank,
+            membership,
+        )
+        return membership
+
+    def complete_ft_rejoin_generation(self, generation: str) -> None:
+        """Commit a globally successful generation and publish its ack."""
+        self._ft_rejoin_generation = generation
+        if ack_dir := self._ft_rejoin_ack_dir:
+            os.makedirs(ack_dir, exist_ok=True)
+            ack_path = os.path.join(ack_dir, f"{generation}.rank-{self.rank}.ack")
+            with open(ack_path, "w", encoding="utf-8") as ack_file:
+                ack_file.write(f"rank={self.rank}\n")
+        logger.warning("Completed FT NCCL rejoin generation %s.", generation)
 
     def _maybe_rejoin_ft_membership(self) -> None:
         """Poll the experiment trigger and execute each rejoin generation once."""
@@ -1020,13 +1043,7 @@ class Worker(WorkerBase):
                 f"membership after {self._ft_rejoin_max_attempts} attempts: "
                 f"{memberships}"
             )
-        self._ft_rejoin_generation = generation
-        if ack_dir := self._ft_rejoin_ack_dir:
-            os.makedirs(ack_dir, exist_ok=True)
-            ack_path = os.path.join(ack_dir, f"{generation}.rank-{self.rank}.ack")
-            with open(ack_path, "w", encoding="utf-8") as ack_file:
-                ack_file.write(f"rank={self.rank}\n")
-        logger.warning("Completed FT NCCL rejoin generation %s.", generation)
+        self.complete_ft_rejoin_generation(generation)
 
     def _wait_for_ft_rejoin_arrivals(
         self, generation: str, attempt: int, phase: str = "start"

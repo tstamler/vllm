@@ -37,6 +37,10 @@ Every worker calls `ft_rejoin()` once for that generation between model steps.
 Each persistent DP EngineCore polls the trigger and explicitly invokes both of
 its TP workers, including workers withdrawn from model execution. Active
 workers do not initiate rejoin from the model path.
+EngineCore ranks rendezvous on their existing CPU DP group before TP rejoin,
+before EP rejoin, and before resuming. A CPU all-reduce commits an attempt only
+when every local TP and EP worker reports full membership; filesystem markers
+are used only for experiment acknowledgements.
 TP groups rejoin first and the world-wide EP rejoin runs last, acting as the
 final rendezvous before workers resume model execution.
 An incomplete rejoin round is retried in-place rather than escaping through the
