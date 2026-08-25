@@ -46,7 +46,7 @@ def test_rejoin_ft_membership_refreshes_mask_without_rebuild(monkeypatch):
     assert process_group.cleared
 
 
-def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
+def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path, monkeypatch):
     trigger = tmp_path / "rejoin.trigger"
     ack_dir = tmp_path / "acks"
     worker = object.__new__(Worker)
@@ -60,6 +60,10 @@ def test_worker_rejoin_trigger_runs_each_generation_once(tmp_path):
     worker._ft_rejoin_last_poll = 0.0
     worker._ft_rejoin_generation = None
     worker.rejoin_ft_membership = Mock(return_value=[[True, True]])
+    monkeypatch.setattr(
+        "vllm.v1.worker.gpu_worker.get_ep_group",
+        lambda: type("EPGroup", (), {"rank_in_group": 3})(),
+    )
 
     trigger.write_text("generation-1\n", encoding="utf-8")
     worker._maybe_rejoin_ft_membership()

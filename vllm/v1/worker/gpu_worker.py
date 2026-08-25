@@ -976,9 +976,10 @@ class Worker(WorkerBase):
         self._ft_rejoin_generation = generation
         if ack_dir := self._ft_rejoin_ack_dir:
             os.makedirs(ack_dir, exist_ok=True)
-            ack_path = os.path.join(ack_dir, f"{generation}.rank-{self.rank}.ack")
+            ep_rank = get_ep_group().rank_in_group
+            ack_path = os.path.join(ack_dir, f"{generation}.rank-{ep_rank}.ack")
             with open(ack_path, "w", encoding="utf-8") as ack_file:
-                ack_file.write(f"rank={self.rank}\n")
+                ack_file.write(f"rank={ep_rank}\n")
         logger.warning("Completed FT NCCL rejoin generation %s.", generation)
 
     def _maybe_rejoin_ft_membership(self) -> None:
