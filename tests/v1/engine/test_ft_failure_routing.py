@@ -97,10 +97,11 @@ def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
     core._tp_degraded = False
     core._ft_observed_active_dp_ranks = None
     core._ft_pending_rejoin_generation = None
+    core._ft_rejoin_draining = False
     core._install_ft_membership_after_failure = Mock()
     core._poll_ft_rejoin_generation = Mock(return_value=None)
 
-    sync = Mock(return_value=(True, False, False, (1,)))
+    sync = Mock(return_value=(True, False, False, False, (1,)))
     monkeypatch.setattr("vllm.v1.engine.core.ParallelConfig.sync_ft_dp_state", sync)
 
     assert core._has_global_unfinished_reqs(local_unfinished=True)
@@ -109,6 +110,7 @@ def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
         has_unfinished=True,
         pending_pause=False,
         rejoin_requested=False,
+        rejoin_ready=False,
         active_dp_ranks=None,
         failed_dp_ranks=(),
     )
@@ -121,27 +123,31 @@ def test_ft_dp_sync_selects_majority_responder_component(monkeypatch):
     def aggregate_responder_votes(tensor, **kwargs):
         del kwargs
         tensor.copy_(
-            torch.tensor(
-                [3, 0, 4, 0, 3, 1, 3, 3, 0, 0, 0, 0], dtype=torch.int32
-            )
+            torch.tensor([3, 0, 4, 0, 0, 3, 1, 3, 3, 0, 0, 0, 0], dtype=torch.int32)
         )
 
     monkeypatch.setattr("torch.distributed.all_reduce", aggregate_responder_votes)
 
-    has_unfinished, pause_consensus, rejoin_consensus, failures = (
-        ParallelConfig.sync_ft_dp_state(
-            dp_group,
-            has_unfinished=True,
-            pending_pause=False,
-            rejoin_requested=False,
-            active_dp_ranks=(0, 2, 3),
-            failed_dp_ranks=(),
-        )
+    (
+        has_unfinished,
+        pause_consensus,
+        rejoin_requested_consensus,
+        rejoin_ready_consensus,
+        failures,
+    ) = ParallelConfig.sync_ft_dp_state(
+        dp_group,
+        has_unfinished=True,
+        pending_pause=False,
+        rejoin_requested=False,
+        rejoin_ready=False,
+        active_dp_ranks=(0, 2, 3),
+        failed_dp_ranks=(),
     )
 
     assert has_unfinished
     assert not pause_consensus
-    assert not rejoin_consensus
+    assert not rejoin_requested_consensus
+    assert not rejoin_ready_consensus
     assert failures == (1,)
 
 
@@ -151,33 +157,43 @@ def test_ft_dp_sync_requires_every_rank_before_rejoin(monkeypatch):
     def aggregate_rejoin_votes(tensor, **kwargs):
         del kwargs
         tensor[3] = 3
+        tensor[4] = 3
 
     monkeypatch.setattr("torch.distributed.all_reduce", aggregate_rejoin_votes)
 
-    *_, rejoin_consensus, _ = ParallelConfig.sync_ft_dp_state(
-        dp_group,
-        has_unfinished=True,
-        pending_pause=False,
-        rejoin_requested=True,
-        active_dp_ranks=None,
-        failed_dp_ranks=(),
+    *_, rejoin_requested_consensus, rejoin_ready_consensus, _ = (
+        ParallelConfig.sync_ft_dp_state(
+            dp_group,
+            has_unfinished=True,
+            pending_pause=False,
+            rejoin_requested=True,
+            rejoin_ready=True,
+            active_dp_ranks=None,
+            failed_dp_ranks=(),
+        )
     )
-    assert not rejoin_consensus
+    assert not rejoin_requested_consensus
+    assert not rejoin_ready_consensus
 
     def aggregate_unanimous_rejoin(tensor, **kwargs):
         del kwargs
         tensor[3] = 4
+        tensor[4] = 4
 
     monkeypatch.setattr("torch.distributed.all_reduce", aggregate_unanimous_rejoin)
-    *_, rejoin_consensus, _ = ParallelConfig.sync_ft_dp_state(
-        dp_group,
-        has_unfinished=True,
-        pending_pause=False,
-        rejoin_requested=True,
-        active_dp_ranks=None,
-        failed_dp_ranks=(),
+    *_, rejoin_requested_consensus, rejoin_ready_consensus, _ = (
+        ParallelConfig.sync_ft_dp_state(
+            dp_group,
+            has_unfinished=True,
+            pending_pause=False,
+            rejoin_requested=True,
+            rejoin_ready=True,
+            active_dp_ranks=None,
+            failed_dp_ranks=(),
+        )
     )
-    assert rejoin_consensus
+    assert rejoin_requested_consensus
+    assert rejoin_ready_consensus
 
 
 def test_ft_rejoin_dispatch_waits_for_dp_consensus(monkeypatch):
@@ -189,16 +205,23 @@ def test_ft_rejoin_dispatch_waits_for_dp_consensus(monkeypatch):
     core.step_counter = 0
     core._tp_degraded = False
     core._ft_observed_active_dp_ranks = None
+    core._ft_rejoin_draining = False
+    core.batch_queue = None
     core._poll_ft_rejoin_generation = Mock(return_value="generation-1")
     core._install_ft_membership_after_failure = Mock()
     core._maybe_execute_ft_rejoin = Mock()
 
-    sync = Mock(return_value=(True, False, False, (1,)))
+    sync = Mock(return_value=(True, False, False, False, (1,)))
     monkeypatch.setattr("vllm.v1.engine.core.ParallelConfig.sync_ft_dp_state", sync)
     assert core._has_global_unfinished_reqs(local_unfinished=True)
     core._maybe_execute_ft_rejoin.assert_not_called()
 
-    sync.return_value = (True, False, True, (1,))
+    sync.return_value = (True, False, True, False, (1,))
+    assert core._has_global_unfinished_reqs(local_unfinished=True)
+    assert core._ft_rejoin_draining
+    core._maybe_execute_ft_rejoin.assert_not_called()
+
+    sync.return_value = (True, False, True, True, (1,))
     assert core._has_global_unfinished_reqs(local_unfinished=True)
     core._maybe_execute_ft_rejoin.assert_called_once_with("generation-1")
 
@@ -218,6 +241,7 @@ def test_withdrawn_dp_engine_dispatches_rejoin_to_workers(tmp_path, monkeypatch)
     core._ft_rejoin_last_poll = 0.0
     core._ft_rejoin_generation = None
     core._ft_pending_rejoin_generation = None
+    core._ft_rejoin_draining = False
     collective_rpc = Mock(
         side_effect=[
             [[True, True], [True, True]],
@@ -318,6 +342,7 @@ def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkey
     core._ft_rejoin_last_poll = 0.0
     core._ft_rejoin_generation = None
     core._ft_pending_rejoin_generation = None
+    core._ft_rejoin_draining = False
     core.model_executor = SimpleNamespace(
         collective_rpc=Mock(
             side_effect=[
@@ -335,6 +360,7 @@ def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkey
     core._maybe_execute_ft_rejoin()
 
     assert not core._ft_stall_withdrawn
+    assert not core._ft_rejoin_draining
     assert core._ft_observed_active_dp_ranks is None
     assert core._ft_installed_failures == ()
     core.output_queue.put_nowait.assert_called_once()

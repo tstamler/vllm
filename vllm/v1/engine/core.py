@@ -497,7 +497,9 @@ class EngineCore:
 
         model_executed = False
         deferred_scheduler_output = None
-        if self.scheduler.has_requests():
+        if self.scheduler.has_requests() and not getattr(
+            self, "_ft_rejoin_draining", False
+        ):
             scheduler_output = self.scheduler.schedule()
             with self.log_error_detail(scheduler_output):
                 exec_future = self.model_executor.execute_model(
@@ -1702,6 +1704,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self._ft_rejoin_last_poll = 0.0
         self._ft_rejoin_generation: str | None = None
         self._ft_pending_rejoin_generation: str | None = None
+        self._ft_rejoin_draining = False
 
         from vllm.distributed.elastic_ep.elastic_state import ElasticEPScalingState
 
@@ -1859,7 +1862,11 @@ class DPEngineCoreProc(EngineCoreProc):
                     self.process_input_queue_block = True
                     self.eep_scaling_state = None
 
-            if self._is_ft_withdrawn():
+            if (
+                (self._ft_rejoin_draining and self.batch_queue is None)
+                or self._is_ft_withdrawn()
+                and not self._ft_rejoin_draining
+            ):
                 executed = False
             else:
                 completed, result = self._run_with_ft_worker_death_guard(
@@ -1870,7 +1877,11 @@ class DPEngineCoreProc(EngineCoreProc):
 
             local_unfinished_reqs = self.scheduler.has_unfinished_requests()
             if not executed:
-                if self._is_ft_withdrawn():
+                if self._ft_rejoin_draining:
+                    # Rejoin cannot begin while async model outputs from the
+                    # degraded generation remain queued in EngineCore.
+                    pass
+                elif self._is_ft_withdrawn():
                     # This DP engine's EP ranks were removed together. Keep its
                     # workers idle while EngineCore remains available for CPU
                     # coordination and an explicit rejoin control operation.
@@ -1983,8 +1994,7 @@ class DPEngineCoreProc(EngineCoreProc):
             return
 
         logger.warning(
-            "DP rank %d dispatching FT NCCL rejoin generation %s to all TP "
-            "workers.",
+            "DP rank %d dispatching FT NCCL rejoin generation %s to all TP workers.",
             self.dp_rank,
             generation,
         )
@@ -2032,6 +2042,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self.barrier()
         self._ft_rejoin_generation = generation
         self._ft_pending_rejoin_generation = None
+        self._ft_rejoin_draining = False
         self._ft_observed_active_dp_ranks = None
         self._ft_installed_failures = ()
         if self._ft_stall_withdrawn and not self._tp_degraded:
@@ -2131,25 +2142,45 @@ class DPEngineCoreProc(EngineCoreProc):
 
         if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
             pending_rejoin = self._poll_ft_rejoin_generation()
+            rejoin_ready = (
+                pending_rejoin is not None
+                and self._ft_rejoin_draining
+                and not self.batch_queue
+            )
             local_failures = set()
             if self._tp_degraded:
                 local_failures.add(self.dp_rank)
             (
                 has_unfinished,
                 pause_consensus,
-                rejoin_consensus,
+                rejoin_requested_consensus,
+                rejoin_ready_consensus,
                 failures,
             ) = ParallelConfig.sync_ft_dp_state(
                 self.dp_group,
                 has_unfinished=local_unfinished,
                 pending_pause=self.pending_pause,
                 rejoin_requested=pending_rejoin is not None,
+                rejoin_ready=rejoin_ready,
                 active_dp_ranks=self._ft_observed_active_dp_ranks,
                 failed_dp_ranks=tuple(sorted(local_failures)),
             )
             self._install_ft_membership_after_failure(failures)
-            if rejoin_consensus:
+            if rejoin_requested_consensus and not self._ft_rejoin_draining:
+                self._ft_rejoin_draining = True
+                logger.warning(
+                    "DP rank %d draining pre-rejoin model outputs before FT "
+                    "NCCL rejoin generation %s.",
+                    self.dp_rank,
+                    pending_rejoin,
+                )
+            if rejoin_ready_consensus:
                 assert pending_rejoin is not None
+                logger.warning(
+                    "DP rank %d completed the pre-rejoin drain for generation %s.",
+                    self.dp_rank,
+                    pending_rejoin,
+                )
                 self._maybe_execute_ft_rejoin(pending_rejoin)
         else:
             has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
