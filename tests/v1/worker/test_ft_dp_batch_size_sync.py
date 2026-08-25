@@ -38,11 +38,13 @@ def test_rejoin_ft_membership_refreshes_mask_without_rebuild(monkeypatch):
     communicator.device = torch.device("cuda")
     communicator.unique_name = "ep:0"
     communicator._ft_active_mask = [True, False]
+    communicator._ft_result_mask = [True, False]
     communicator._get_ft_process_group = lambda: process_group
 
     assert communicator.rejoin_ft_membership() == [True, True]
     assert stream.synchronized
     assert communicator._ft_active_mask == [True, True]
+    assert communicator._ft_result_mask is None
     assert process_group.cleared
 
 
@@ -243,6 +245,7 @@ def test_set_ft_ep_active_mask_removes_entire_failed_dp_rank(monkeypatch):
     communicator.unique_name = "ep:0"
     communicator._ft_process_group = FakeProcessGroup()
     communicator._ft_active_mask = None
+    communicator._ft_result_mask = [True, True, False, False, True, True, True, True]
 
     active_mask = communicator.set_ft_ep_active_mask((1,), dp_size=4)
 
@@ -250,6 +253,25 @@ def test_set_ft_ep_active_mask_removes_entire_failed_dp_rank(monkeypatch):
     assert communicator._ft_process_group.active_mask == active_mask
     assert communicator._ft_process_group.error_cleared
     assert communicator._ft_active_mask == active_mask
+    assert communicator._ft_result_mask is None
+
+
+def test_ft_result_mask_records_collective_responders():
+    class FakeProcessGroup:
+        @staticmethod
+        def get_result_mask():
+            return [True, True, False, False]
+
+    communicator = object.__new__(CudaCommunicator)
+    communicator._ft_result_mask = None
+
+    assert communicator._record_ft_result_mask(FakeProcessGroup()) == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert communicator.get_ft_result_mask() == [True, True, False, False]
 
 
 def test_ft_active_mask_cache_refreshes_on_demand():

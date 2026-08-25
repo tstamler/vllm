@@ -1694,7 +1694,7 @@ class DPEngineCoreProc(EngineCoreProc):
         self.ignore_start_dp_wave = False
         self._tp_degraded = False
         self._ft_stall_withdrawn = False
-        self._ft_observed_failures: tuple[int, ...] = ()
+        self._ft_observed_active_dp_ranks: tuple[int, ...] | None = None
         self._ft_installed_failures: tuple[int, ...] = ()
         self._ft_rejoin_trigger = envs.VLLM_FT_REJOIN_TRIGGER_FILE
         self._ft_rejoin_poll_interval = envs.VLLM_FT_REJOIN_POLL_INTERVAL
@@ -1940,20 +1940,20 @@ class DPEngineCoreProc(EngineCoreProc):
         self._send_error_outputs(errored)
 
     def _observe_model_runner_output(self, model_output: ModelRunnerOutput) -> None:
-        active_mask = model_output.ft_ep_active_mask
-        if not active_mask:
+        result_mask = model_output.ft_ep_result_mask
+        if not result_mask:
             return
-        if len(active_mask) % self.dp_size:
+        if len(result_mask) % self.dp_size:
             raise RuntimeError(
-                f"EP active-mask size {len(active_mask)} is not divisible by "
+                f"EP result-mask size {len(result_mask)} is not divisible by "
                 f"DP size {self.dp_size}."
             )
-        replicas_per_dp = len(active_mask) // self.dp_size
-        self._ft_observed_failures = tuple(
+        replicas_per_dp = len(result_mask) // self.dp_size
+        self._ft_observed_active_dp_ranks = tuple(
             dp_rank
             for dp_rank in range(self.dp_size)
-            if not all(
-                active_mask[dp_rank * replicas_per_dp : (dp_rank + 1) * replicas_per_dp]
+            if all(
+                result_mask[dp_rank * replicas_per_dp : (dp_rank + 1) * replicas_per_dp]
             )
         )
 
@@ -2023,7 +2023,7 @@ class DPEngineCoreProc(EngineCoreProc):
         )
         self.barrier()
         self._ft_rejoin_generation = generation
-        self._ft_observed_failures = ()
+        self._ft_observed_active_dp_ranks = None
         self._ft_installed_failures = ()
         if self._ft_stall_withdrawn and not self._tp_degraded:
             self._ft_stall_withdrawn = False
@@ -2121,13 +2121,14 @@ class DPEngineCoreProc(EngineCoreProc):
             return True
 
         if envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-            local_failures = set(self._ft_observed_failures)
+            local_failures = set()
             if self._tp_degraded:
                 local_failures.add(self.dp_rank)
             has_unfinished, pause_consensus, failures = ParallelConfig.sync_ft_dp_state(
                 self.dp_group,
                 has_unfinished=local_unfinished,
                 pending_pause=self.pending_pause,
+                active_dp_ranks=self._ft_observed_active_dp_ranks,
                 failed_dp_ranks=tuple(sorted(local_failures)),
             )
             self._install_ft_membership_after_failure(failures)

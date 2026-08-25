@@ -786,23 +786,21 @@ class Worker(WorkerBase):
         self, grammar_output: "GrammarOutput | None"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
         output = self.model_runner.sample_tokens(grammar_output)
-        return self._attach_ft_ep_active_mask(output)
+        return self._attach_ft_ep_result_mask(output)
 
-    def _attach_ft_ep_active_mask(
+    def _attach_ft_ep_result_mask(
         self, output: ModelRunnerOutput | AsyncModelRunnerOutput
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
         if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
             return output
         communicator = get_ep_group().device_communicator
-        get_active_mask = (
-            getattr(communicator, "get_ft_active_mask", None)
+        get_result_mask = (
+            getattr(communicator, "get_ft_result_mask", None)
             if communicator is not None
             else None
         )
-        if get_active_mask is not None:
-            active_mask = get_active_mask()
-            if active_mask and not all(active_mask):
-                output.ft_ep_active_mask = active_mask
+        if get_result_mask is not None:
+            output.ft_ep_result_mask = get_result_mask()
         return output
 
     @torch.inference_mode()
@@ -879,7 +877,7 @@ class Worker(WorkerBase):
                 output, ModelRunnerOutput | AsyncModelRunnerOutput | NoneType
             ):
                 if output is not None:
-                    return self._attach_ft_ep_active_mask(output)
+                    return self._attach_ft_ep_result_mask(output)
                 return None
 
         assert isinstance(output, IntermediateTensors)

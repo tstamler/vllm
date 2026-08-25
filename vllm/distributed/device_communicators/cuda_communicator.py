@@ -151,6 +151,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             tuple[str, int | None, int], torch.Tensor
         ] = {}
         self._ft_active_mask: list[bool] | None = None
+        self._ft_result_mask: list[bool] | None = None
         self._ft_dp_metadata_host: torch.Tensor | None = None
         self._ft_dp_metadata_device: torch.Tensor | None = None
         self._ft_dp_metadata_packed: torch.Tensor | None = None
@@ -610,7 +611,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 raise RuntimeError(
                     "FT failure survival requires FTProcessGroup.get_result_mask()."
                 )
-            result_mask = ft_process_group.get_result_mask()
+            result_mask = self._record_ft_result_mask(ft_process_group)
             self._get_ft_active_mask(ft_process_group, refresh=True)
             logger.warning(
                 "FT NCCL collective for group '%s' completed after a peer "
@@ -670,6 +671,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
             old_mask = self._get_ft_active_mask(ft_process_group)
             new_mask = list(ft_process_group.ft_rejoin())
             self._ft_active_mask = new_mask
+            self._ft_result_mask = None
             ft_process_group.clear_error()
         if new_mask != old_mask:
             logger.warning(
@@ -687,11 +689,18 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self._ft_active_mask = list(ft_process_group.get_active_mask())
         return self._ft_active_mask
 
-    def get_ft_active_mask(self) -> list[bool] | None:
-        """Return the cached FT membership without synchronizing CUDA."""
-        if not envs.VLLM_FT_SURVIVE_WORKER_FAILURE:
-            return None
-        return list(self._get_ft_active_mask(self._get_ft_process_group()))
+    def _record_ft_result_mask(self, ft_process_group) -> list[bool]:
+        result_mask = list(ft_process_group.get_result_mask())
+        self._ft_result_mask = result_mask
+        return result_mask
+
+    def get_ft_result_mask(self) -> list[bool] | None:
+        """Return responders from the last failed FT collective, if any."""
+        return (
+            list(self._ft_result_mask)
+            if self._ft_result_mask is not None
+            else None
+        )
 
     def _get_ft_dp_metadata_buffers(
         self,
@@ -760,6 +769,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         # completed. Do not let a sticky timeout from the interrupted step
         # poison the first collective under the newly installed membership.
         ft_process_group.clear_error()
+        self._ft_result_mask = None
         if active_mask != old_mask:
             logger.warning(
                 "Installed framework-managed FT NCCL membership for group "
@@ -829,7 +839,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                     )
                 return tokens_across_dp, synced_cudagraph_mode
 
-            result_mask = ft_process_group.get_result_mask()
+            result_mask = self._record_ft_result_mask(ft_process_group)
             old_mask = self._get_ft_active_mask(ft_process_group)
             with torch.inference_mode(False):
                 ft_process_group.ft_converge()
@@ -1089,7 +1099,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 # A successful transaction leaves the sticky flag at FT_OK.
                 return outputs
 
-            result_mask = ft_process_group.get_result_mask()
+            result_mask = self._record_ft_result_mask(ft_process_group)
             old_mask = active_mask
             with torch.inference_mode(False):
                 ft_process_group.ft_converge()
@@ -1345,6 +1355,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         self._ft_staging_workspaces.clear()
         self._ft_all_gatherv_send_counts.clear()
         self._ft_active_mask = None
+        self._ft_result_mask = None
         self._ft_dp_metadata_host = None
         self._ft_dp_metadata_device = None
         self._ft_dp_metadata_packed = None

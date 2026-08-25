@@ -1001,7 +1001,7 @@ class WorkerProc:
         if isinstance(output, AsyncModelRunnerOutput):
             async_output = output
             output = async_output.get_output()
-            output.ft_ep_active_mask = async_output.ft_ep_active_mask
+            output.ft_ep_result_mask = async_output.ft_ep_result_mask
 
         if isinstance(output, Exception):
             result = (WorkerProc.ResponseStatus.FAILURE, str(output))

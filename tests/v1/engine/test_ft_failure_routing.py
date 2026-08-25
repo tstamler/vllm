@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 import pytest
+import torch
 
+from vllm.config import ParallelConfig
 from vllm.v1.engine import EngineCoreOutputs
 from vllm.v1.engine.core import DPEngineCoreProc
 from vllm.v1.engine.core_client import DPLBAsyncMPClient
@@ -94,7 +96,7 @@ def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
     core.pending_pause = False
     core.step_counter = 0
     core._tp_degraded = False
-    core._ft_observed_failures = ()
+    core._ft_observed_active_dp_ranks = None
     core._install_ft_membership_after_failure = Mock()
 
     sync = Mock(return_value=(True, False, (1,)))
@@ -105,9 +107,32 @@ def test_ft_dp_sync_installs_globally_agreed_failures(monkeypatch):
         core.dp_group,
         has_unfinished=True,
         pending_pause=False,
+        active_dp_ranks=None,
         failed_dp_ranks=(),
     )
     core._install_ft_membership_after_failure.assert_called_once_with((1,))
+
+
+def test_ft_dp_sync_selects_majority_responder_component(monkeypatch):
+    dp_group = SimpleNamespace(size=lambda: 4)
+
+    def aggregate_responder_votes(tensor, **kwargs):
+        del kwargs
+        tensor.copy_(torch.tensor([3, 0, 4, 3, 1, 3, 3, 0, 0, 0, 0], dtype=torch.int32))
+
+    monkeypatch.setattr("torch.distributed.all_reduce", aggregate_responder_votes)
+
+    has_unfinished, pause_consensus, failures = ParallelConfig.sync_ft_dp_state(
+        dp_group,
+        has_unfinished=True,
+        pending_pause=False,
+        active_dp_ranks=(0, 2, 3),
+        failed_dp_ranks=(),
+    )
+
+    assert has_unfinished
+    assert not pause_consensus
+    assert failures == (1,)
 
 
 def test_withdrawn_dp_engine_dispatches_rejoin_to_workers(tmp_path, monkeypatch):
@@ -117,7 +142,7 @@ def test_withdrawn_dp_engine_dispatches_rejoin_to_workers(tmp_path, monkeypatch)
     core.dp_rank = 1
     core._tp_degraded = True
     core._ft_stall_withdrawn = False
-    core._ft_observed_failures = ()
+    core._ft_observed_active_dp_ranks = None
     core._ft_installed_failures = ()
     core._ft_rejoin_trigger = str(trigger)
     core._ft_rejoin_poll_interval = 0.0
@@ -154,7 +179,7 @@ def test_mask_failure_withdraws_dp_engine_until_rejoin():
     core.dp_size = 4
     core._tp_degraded = False
     core._ft_stall_withdrawn = False
-    core._ft_observed_failures = ()
+    core._ft_observed_active_dp_ranks = None
     core._ft_installed_failures = ()
     core.output_queue = Mock()
     core.scheduler = SimpleNamespace(
@@ -164,12 +189,12 @@ def test_mask_failure_withdraws_dp_engine_until_rejoin():
     core.model_executor = SimpleNamespace(collective_rpc=Mock())
 
     output = SimpleNamespace(
-        ft_ep_active_mask=[True, True, False, True, True, True, True, True]
+        ft_ep_result_mask=[True, True, False, False, True, True, True, True]
     )
     core._observe_model_runner_output(output)
-    core._install_ft_membership_after_failure(core._ft_observed_failures)
+    core._install_ft_membership_after_failure((1,))
 
-    assert core._ft_observed_failures == (1,)
+    assert core._ft_observed_active_dp_ranks == (0, 2, 3)
     assert core._ft_stall_withdrawn
     core.output_queue.put_nowait.assert_called_once_with(
         (-1, EngineCoreOutputs(dp_engine_available=(1, False)))
@@ -215,7 +240,7 @@ def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkey
     core.dp_rank = 1
     core._tp_degraded = False
     core._ft_stall_withdrawn = True
-    core._ft_observed_failures = (1,)
+    core._ft_observed_active_dp_ranks = (1,)
     core._ft_installed_failures = (1,)
     core._ft_rejoin_trigger = str(trigger)
     core._ft_rejoin_poll_interval = 0.0
@@ -239,7 +264,7 @@ def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkey
     core._maybe_execute_ft_rejoin()
 
     assert not core._ft_stall_withdrawn
-    assert core._ft_observed_failures == ()
+    assert core._ft_observed_active_dp_ranks is None
     assert core._ft_installed_failures == ()
     core.output_queue.put_nowait.assert_called_once_with(
         (-1, EngineCoreOutputs(dp_engine_available=(1, True)))
