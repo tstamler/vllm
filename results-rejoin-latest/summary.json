@@ -1,0 +1,17 @@
+{
+  "origin_unix": 1787671540.329587,
+  "smoothing_seconds": 5.0,
+  "client_smoothing_seconds": 15.0,
+  "pre_failure_output_tok_s_median": 5627.834261125457,
+  "post_failure_output_tok_s_median": 3174.399047957905,
+  "post_to_pre_capacity_ratio": 0.5640533997039009,
+  "pre_failure_output_tok_s_p95": 5854.005582814772,
+  "seconds_to_first_zero_throughput": 1.6801259517669678,
+  "seconds_to_90pct_post_failure_throughput": 1.6801259517669678,
+  "seconds_to_first_successful_response": 30.018802165985107,
+  "failed_requests_after_disruption": 316,
+  "seconds_to_rejoin_complete": 120.25203084945679,
+  "degraded_output_tok_s_median": 4987.233168968098,
+  "restored_output_tok_s_median": 3174.399047957905,
+  "restored_to_pre_capacity_ratio": 0.5640533997039009
+}
