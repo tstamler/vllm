@@ -1,5 +1,5 @@
 timestamp_unix,event,detail
-1787671540.329587094,worker_stalled,pid=3766029 pattern=Worker_DP1_TP1
-1787671560.331950669,worker_resumed,pid=3766029 pattern=Worker_DP1_TP1
-1787671650.338718223,rejoin_requested,generation=1787671650334370374
-1787671660.581617774,rejoin_complete,generation=1787671650334370374 acknowledgements=8
+1787673133.547509768,worker_stalled,pid=3786130 pattern=Worker_DP1_TP1
+1787673153.550943153,worker_resumed,pid=3786130 pattern=Worker_DP1_TP1
+1787673243.558210585,rejoin_requested,generation=1787673243553545757
+1787673253.805279750,rejoin_complete,generation=1787673243553545757 acknowledgements=8
