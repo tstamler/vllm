@@ -1845,7 +1845,7 @@ class DPEngineCoreProc(EngineCoreProc):
         while self._handle_shutdown():
             self._maybe_execute_ft_rejoin()
             # 1) Poll the input queue until there is work to do.
-            self._process_input_queue()
+            self._process_input_queue_for_ft()
             self._maybe_handle_own_tp_degradation()
             self._fail_ft_stall_requests()
             # Publish request counts before and after GPU step to ensure freshness.
@@ -1874,9 +1874,13 @@ class DPEngineCoreProc(EngineCoreProc):
                     # This DP engine's EP ranks were removed together. Keep its
                     # workers idle while EngineCore remains available for CPU
                     # coordination and an explicit rejoin control operation.
-                    pass
+                    if not local_unfinished_reqs and not self.engines_running:
+                        time.sleep(self._ft_rejoin_poll_interval)
+                        continue
                 elif not local_unfinished_reqs and not self.engines_running:
                     # All engines are idle.
+                    if self._ft_installed_failures:
+                        time.sleep(self._ft_rejoin_poll_interval)
                     continue
                 else:
                     # We are in a running state and so must execute a dummy pass
@@ -1914,6 +1918,19 @@ class DPEngineCoreProc(EngineCoreProc):
 
     def _is_ft_withdrawn(self) -> bool:
         return self._tp_degraded or self._ft_stall_withdrawn
+
+    def _process_input_queue_for_ft(self) -> None:
+        """Keep the rejoin control plane live after routing withdrawal."""
+        if not self._ft_installed_failures:
+            self._process_input_queue()
+            return
+
+        block = self.process_input_queue_block
+        self.process_input_queue_block = False
+        try:
+            self._process_input_queue()
+        finally:
+            self.process_input_queue_block = block
 
     def _fail_ft_stall_requests(self) -> None:
         """Reject requests that race with transient routing withdrawal."""

@@ -178,6 +178,36 @@ def test_mask_failure_withdraws_dp_engine_until_rejoin():
     core.model_executor.collective_rpc.assert_not_called()
 
 
+def test_installed_failure_keeps_input_polling_nonblocking():
+    core = object.__new__(DPEngineCoreProc)
+    core._ft_installed_failures = (1,)
+    core.process_input_queue_block = True
+    observed_blocking = []
+    core._process_input_queue = Mock(
+        side_effect=lambda: observed_blocking.append(core.process_input_queue_block)
+    )
+
+    core._process_input_queue_for_ft()
+
+    assert observed_blocking == [False]
+    assert core.process_input_queue_block
+
+
+def test_healthy_membership_preserves_blocking_input_poll():
+    core = object.__new__(DPEngineCoreProc)
+    core._ft_installed_failures = ()
+    core.process_input_queue_block = True
+    observed_blocking = []
+    core._process_input_queue = Mock(
+        side_effect=lambda: observed_blocking.append(core.process_input_queue_block)
+    )
+
+    core._process_input_queue_for_ft()
+
+    assert observed_blocking == [True]
+    assert core.process_input_queue_block
+
+
 def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkeypatch):
     trigger = tmp_path / "rejoin.trigger"
     trigger.write_text("generation-2\n", encoding="utf-8")
