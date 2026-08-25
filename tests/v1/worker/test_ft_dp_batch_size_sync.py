@@ -113,6 +113,7 @@ def test_worker_rejoins_ep_last_as_global_rendezvous(monkeypatch):
         "vllm.v1.worker.gpu_worker.get_ep_group", lambda: FakeGroup("ep")
     )
     worker = object.__new__(Worker)
+    worker.rank = 0
 
     assert worker.rejoin_ft_membership(lambda: calls.append("rendezvous")) == [
         [True, True],

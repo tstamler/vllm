@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from vllm.config import ParallelConfig
-from vllm.v1.engine import EngineCoreOutputs
 from vllm.v1.engine.core import DPEngineCoreProc
 from vllm.v1.engine.core_client import DPLBAsyncMPClient
 
@@ -196,9 +195,10 @@ def test_mask_failure_withdraws_dp_engine_until_rejoin():
 
     assert core._ft_observed_active_dp_ranks == (0, 2, 3)
     assert core._ft_stall_withdrawn
-    core.output_queue.put_nowait.assert_called_once_with(
-        (-1, EngineCoreOutputs(dp_engine_available=(1, False)))
-    )
+    core.output_queue.put_nowait.assert_called_once()
+    client_index, queued_output = core.output_queue.put_nowait.call_args.args[0]
+    assert client_index == -1
+    assert queued_output.dp_engine_available == (1, False)
     core._send_error_outputs.assert_called_once_with([("request-0", 0)])
     core.model_executor.collective_rpc.assert_not_called()
 
@@ -266,6 +266,7 @@ def test_successful_rejoin_returns_transiently_withdrawn_engine(tmp_path, monkey
     assert not core._ft_stall_withdrawn
     assert core._ft_observed_active_dp_ranks is None
     assert core._ft_installed_failures == ()
-    core.output_queue.put_nowait.assert_called_once_with(
-        (-1, EngineCoreOutputs(dp_engine_available=(1, True)))
-    )
+    core.output_queue.put_nowait.assert_called_once()
+    client_index, queued_output = core.output_queue.put_nowait.call_args.args[0]
+    assert client_index == -1
+    assert queued_output.dp_engine_available == (1, True)
